@@ -6,8 +6,10 @@ import numpy as np
 from openengine.cad import (
     calculate_block_thermal_capacity,
     calculate_combustion_chamber_volume,
+    calculate_crankshaft_balance,
     extract_intake_port_fluid_domain,
     generate_connecting_rod,
+    generate_crankshaft,
     generate_cylinder_block,
     generate_cylinder_head,
     generate_cylinder_liner,
@@ -379,6 +381,15 @@ def cad(
   therm = calculate_block_thermal_capacity()
   rich.print(
       f"[green]Saved cylinder block ({block.volume/1000:.1f} cm³, {therm['exterior_area_m2']:.3f} m² fin area, {therm['thermal_dissipation_w']:.0f} W cooling) to: {block_file}[/green]"
+  )
+
+  rich.print("[cyan]Generating Forged 4340 Counterweighted Crankshaft via build123d...[/cyan]")
+  crank = generate_crankshaft()
+  crank_file = out_path / "crankshaft.step"
+  export_step(crank, crank_file)
+  crank_bal = calculate_crankshaft_balance()
+  rich.print(
+      f"[green]Saved crankshaft ({crank.volume/1000:.1f} cm³, {crank_bal['crankshaft_mass_kg']:.2f} kg, {crank_bal['balance_factor_percent']:.1f}% balance) to: {crank_file}[/green]"
   )
 
 

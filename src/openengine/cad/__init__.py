@@ -1,6 +1,11 @@
 """Parametric CAD solid modeling modules based on build123d and Open CASCADE."""
 
 from .connecting_rod import generate_connecting_rod
+from .crankshaft import (
+    CrankshaftParams,
+    calculate_crankshaft_balance,
+    generate_crankshaft,
+)
 from .cylinder_block import (
     CylinderBlockParams,
     calculate_block_thermal_capacity,
@@ -28,4 +33,7 @@ __all__ = [
     "generate_cylinder_liner",
     "calculate_block_thermal_capacity",
     "CylinderBlockParams",
+    "generate_crankshaft",
+    "calculate_crankshaft_balance",
+    "CrankshaftParams",
 ]
