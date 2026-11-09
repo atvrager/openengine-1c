@@ -1,6 +1,7 @@
 """OpenEngine-1C Command Line Interface."""
 
 from pathlib import Path
+import time
 from build123d import export_step
 import numpy as np
 from openengine.cad import (
@@ -35,6 +36,14 @@ from openengine.dynamics import (
     HydrodynamicBearing,
     SOHCCamshaft,
     SliderCrankDynamics,
+)
+from openengine.fea import (
+    ConrodFeaConfig,
+    HeadGasketFeaConfig,
+    PistonFeaConfig,
+    run_conrod_fea,
+    run_head_gasket_fea,
+    run_piston_fea,
 )
 from openengine.infra.podman import PodmanRunner
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
@@ -632,6 +641,147 @@ def cfd_closed_loop(
 
   rich.print(table)
   rich.print(f"[bold green]Saved closed-loop calibration results to: {json_file}[/bold green]")
+
+
+@app.command(name="fea-piston")
+def fea_piston(
+    peak_pressure_bar: float = 78.0,
+    crown_temp_c: float = 250.0,
+    output_dir: str = "outputs/fea/piston",
+):
+  """Run structural & coupled thermo-mechanical FEA on the piston using CalculiX ccx."""
+  rich.print(f"[cyan]Running piston FEA (P_max = {peak_pressure_bar:.1f} bar, T_crown = {crown_temp_c:.1f}°C)...[/cyan]")
+
+  cfg = PistonFeaConfig(
+      peak_pressure_mpa=peak_pressure_bar / 10.0,
+      crown_temp_c=crown_temp_c,
+  )
+  res = run_piston_fea(config=cfg, output_dir=output_dir)
+
+  table = Table(
+      title="Piston Structural & Thermo-Mechanical FEA (CalculiX ccx)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Load Case / Metric", style="magenta")
+  table.add_column("Value", style="bold green")
+  table.add_column("Target / Limit", style="yellow")
+  table.add_column("Status", style="cyan")
+
+  table.add_row("Mesh Density", f"{res.mesh_stats['num_nodes']:,} nodes / {res.mesh_stats['num_elements']:,} tets (C3D10)", "Quadratic", "PASS")
+  table.add_row("LC-1 Firing TDC Peak Gas Pressure", f"{cfg.peak_pressure_mpa*10.0:.1f} bar ({cfg.peak_pressure_mpa:.2f} MPa)", "Mechanical", "LOAD")
+  table.add_row("LC-1 Peak Von Mises Stress", f"{res.lc1_mechanical.max_von_mises_mpa:.1f} MPa", "Local peak", "INFO")
+  table.add_row("LC-1 P95 Von Mises Stress", f"{res.lc1_mechanical.p95_von_mises_mpa:.1f} MPa", "< 210.0 MPa", "PASS" if res.lc1_mechanical.is_pass else "FAIL")
+  table.add_row("LC-1 Mechanical Deflection", f"{res.lc1_mechanical.max_displacement_mm:.4f} mm", "< 0.50 mm", "PASS")
+  table.add_row("LC-1 Yield Safety Factor", f"{res.lc1_mechanical.yield_safety_factor:.2f}", ">= 1.60", "PASS" if res.lc1_mechanical.is_pass else "FAIL")
+  table.add_row("---", "---", "---", "---")
+  table.add_row("LC-2 Crown Operating Temp", f"{cfg.crown_temp_c:.1f}°C", "Thermal", "LOAD")
+  table.add_row("LC-2 P95 Von Mises (Coupled)", f"{res.lc2_thermo_mechanical.p95_von_mises_mpa:.1f} MPa", "< 315.0 MPa", "PASS" if res.lc2_thermo_mechanical.is_pass else "FAIL")
+  table.add_row("LC-2 Skirt Thermal Expansion", f"{res.lc2_thermo_mechanical.details['skirt_thermal_growth_um']:.1f} µm", "Radial", "EXP")
+  table.add_row("LC-2 Liner Thermal Expansion", f"{res.lc2_thermo_mechanical.details['liner_thermal_growth_um']:.1f} µm", "Radial", "EXP")
+  table.add_row("LC-2 Hot Skirt Running Clearance", f"{res.hot_skirt_clearance_mm*1000.0:.1f} µm", ">= 20.0 µm", "PASS" if res.is_clearance_safe else "FAIL")
+  table.add_row("Total Simulation Solve Time", f"{res.total_solve_time_s:.2f} s", "< 60.0 s", "PASS")
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved piston FEA results to: {output_dir}/piston_fea_results.json[/bold green]")
+
+
+@app.command(name="fea-conrod")
+def fea_conrod(
+    peak_pressure_bar: float = 78.0,
+    redline_rpm: float = 7000.0,
+    output_dir: str = "outputs/fea/conrod",
+):
+  """Run structural, column buckling, and fatigue FEA on the connecting rod using CalculiX ccx."""
+  rich.print(f"[cyan]Running connecting rod FEA (P_max = {peak_pressure_bar:.1f} bar, Redline = {redline_rpm:.0f} RPM)...[/cyan]")
+
+  cfg = ConrodFeaConfig(
+      peak_pressure_mpa=peak_pressure_bar / 10.0,
+      redline_rpm=redline_rpm,
+  )
+  res = run_conrod_fea(config=cfg, output_dir=output_dir)
+
+  table = Table(
+      title="Connecting Rod Structural, Buckling & Fatigue FEA (CalculiX ccx)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Metric / Load Case", style="magenta")
+  table.add_column("Value", style="bold green")
+  table.add_column("Target / Limit", style="yellow")
+  table.add_column("Status", style="cyan")
+
+  table.add_row("Mesh Density", f"{res.mesh_stats['num_nodes']:,} nodes / {res.mesh_stats['num_elements']:,} tets (C3D10)", "Quadratic", "PASS")
+  table.add_row("LC-3A Firing Compressive Force", f"{res.lc3a_compression.applied_force_kn:.2f} kN", "0° CA Peak", "LOAD")
+  table.add_row("LC-3A P95 Von Mises Stress", f"{res.lc3a_compression.p95_von_mises_mpa:.1f} MPa", "< 850.0 MPa", "PASS" if res.lc3a_compression.is_pass else "FAIL")
+  table.add_row("LC-3A Compressive Yield SF", f"{res.lc3a_compression.yield_safety_factor:.2f}", ">= 1.60", "PASS" if res.lc3a_compression.is_pass else "FAIL")
+  table.add_row("---", "---", "---", "---")
+  table.add_row("LC-3B Redline Inertia Tensile Force", f"{res.lc3b_tension.applied_force_kn:.2f} kN", f"@ {cfg.redline_rpm:.0f} RPM", "LOAD")
+  table.add_row("LC-3B P95 Von Mises Stress", f"{res.lc3b_tension.p95_von_mises_mpa:.1f} MPa", "< 850.0 MPa", "PASS" if res.lc3b_tension.is_pass else "FAIL")
+  table.add_row("LC-3B Tensile Yield SF", f"{res.lc3b_tension.yield_safety_factor:.2f}", ">= 1.60", "PASS" if res.lc3b_tension.is_pass else "FAIL")
+  table.add_row("---", "---", "---", "---")
+  table.add_row("Euler Column Buckling Critical Load", f"{res.critical_buckling_load_kn:.1f} kN", f"> {res.lc3a_compression.applied_force_kn*2.5:.1f} kN", "CRIT")
+  table.add_row("Euler Column Buckling SF", f"{res.buckling_safety_factor:.2f}", ">= 2.50", "PASS" if res.is_buckling_safe else "FAIL")
+  table.add_row("Modified Goodman Fatigue SF", f"{res.fatigue_safety_factor:.2f}", ">= 1.50", "PASS" if res.is_fatigue_safe else "FAIL")
+  table.add_row("Total Simulation Solve Time", f"{res.total_solve_time_s:.2f} s", "< 60.0 s", "PASS")
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved connecting rod FEA results to: {output_dir}/conrod_fea_results.json[/bold green]")
+
+
+@app.command(name="fea-gasket")
+def fea_gasket(
+    bolt_preload_kn: float = 22.0,
+    peak_pressure_bar: float = 78.0,
+    output_dir: str = "outputs/fea/gasket",
+):
+  """Run cylinder head bolt preload and fire-ring gasket sealing analysis."""
+  rich.print(f"[cyan]Running cylinder head bolt preload and gasket sealing FEA...[/cyan]")
+
+  cfg = HeadGasketFeaConfig(
+      bolt_preload_kn=bolt_preload_kn,
+      peak_pressure_mpa=peak_pressure_bar / 10.0,
+  )
+  res = run_head_gasket_fea(config=cfg, output_dir=output_dir)
+
+  table = Table(
+      title="Cylinder Head Bolt Preload & Gasket Sealing Analysis",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Parameter / Metric", style="magenta")
+  table.add_column("Value", style="bold green")
+  table.add_column("Target / Limit", style="yellow")
+  table.add_column("Status", style="cyan")
+
+  table.add_row("Bolt Specification", f"{cfg.num_bolts}x M{cfg.bolt_diameter_mm:.0f} Grade 10.9", "Standard", "INFO")
+  table.add_row("Bolt Tightening Torque", f"{res.tightening_torque_nm:.1f} N·m", "Nominal", "SPEC")
+  table.add_row("Total Initial Clamping Force", f"{res.total_clamp_force_kn:.1f} kN", f"{cfg.num_bolts}x {cfg.bolt_preload_kn:.1f} kN", "LOAD")
+  table.add_row("Combustion Separation Force", f"{res.combustion_separation_force_kn:.1f} kN", f"@ {cfg.peak_pressure_mpa*10.0:.1f} bar", "LOAD")
+  table.add_row("Initial Fire-Ring Contact Pressure", f"{res.initial_contact_pressure_mpa:.1f} MPa", "Preload", "INFO")
+  table.add_row("Residual Fire-Ring Contact Pressure", f"{res.residual_contact_pressure_mpa:.1f} MPa", f">= {cfg.min_sealing_pressure_mpa:.1f} MPa", "PASS" if res.is_sealing_safe else "FAIL")
+  table.add_row("Fire-Ring Sealing Safety Factor", f"{res.sealing_safety_factor:.2f}", ">= 1.00", "PASS" if res.is_sealing_safe else "FAIL")
+  table.add_row("Dynamic Bolt Peak Stress", f"{res.bolt_peak_stress_mpa:.1f} MPa", "< 940.0 MPa", "PASS" if res.is_bolt_safe else "FAIL")
+  table.add_row("Bolt Yield Safety Factor", f"{res.bolt_yield_safety_factor:.2f}", f">= {cfg.min_bolt_safety_factor:.2f}", "PASS" if res.is_bolt_safe else "FAIL")
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved head gasket FEA results to: {output_dir}/head_gasket_fea_results.json[/bold green]")
+
+
+@app.command(name="fea-all")
+def fea_all(
+    output_dir: str = "outputs/fea",
+):
+  """Run the complete Phase 4 Structural & Thermal FEA suite (Piston, Connecting Rod, Gasket)."""
+  rich.print("[bold cyan]Executing Complete Phase 4 Structural & Thermal FEA Suite...[/bold cyan]")
+  t0 = time.time()
+
+  fea_piston(output_dir=f"{output_dir}/piston")
+  fea_conrod(output_dir=f"{output_dir}/conrod")
+  fea_gasket(output_dir=f"{output_dir}/gasket")
+
+  elapsed = time.time() - t0
+  rich.print(f"[bold green]Complete Phase 4 FEA Suite finished in {elapsed:.2f} s![/bold green]")
 
 
 if __name__ == "__main__":

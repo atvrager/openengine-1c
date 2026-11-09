@@ -41,38 +41,27 @@ def generate_connecting_rod(
   r_big_outer = (d_crank_mm / 2.0) + 5.5
 
   with BuildPart() as rod:
-    # 1. Small End (at origin (0, 0, 0))
+    # 1. Small End solid cylinder
     Cylinder(
         radius=r_small_outer,
         height=w_small_mm,
         rotation=(0, 90, 0),
     )
-    Cylinder(
-        radius=d_pin_mm / 2.0,
-        height=w_small_mm + 2.0,
-        rotation=(0, 90, 0),
-        mode=Mode.SUBTRACT,
-    )
 
-    # 2. Big End (at (0, l_mm, 0))
+    # 2. Big End solid cylinder
     with Locations((0, l_mm, 0)):
       Cylinder(
           radius=r_big_outer,
           height=w_big_mm,
           rotation=(0, 90, 0),
       )
-      Cylinder(
-          radius=d_crank_mm / 2.0,
-          height=w_big_mm + 2.0,
-          rotation=(0, 90, 0),
-          mode=Mode.SUBTRACT,
-      )
 
-    # 3. I-Beam Shank (swept between the two journals)
-    shank_length = l_mm - r_small_outer - r_big_outer
-    shank_start_y = r_small_outer
+    # 3. I-Beam Shank (swept between and overlapping the two journals)
+    shank_start_y = r_small_outer - 2.0
+    shank_end_y = l_mm - r_big_outer + 2.0
+    shank_length = shank_end_y - shank_start_y
 
-    with BuildSketch(Plane.XZ.offset(shank_start_y)) as shank_profile:
+    with BuildSketch(Plane(origin=(0, shank_start_y, 0), z_dir=(0, 1, 0))) as shank_profile:
       # Outer envelope
       Rectangle(flange_w, height)
       # Pockets for the I-beam webs
@@ -84,7 +73,22 @@ def generate_connecting_rod(
       ):
         Rectangle(pocket_w, pocket_h, mode=Mode.SUBTRACT)
 
-    # Extrude shank along Y axis to connect to big end
+    # Extrude shank along +Y axis to merge with big end
     extrude(amount=shank_length)
+
+    # 4. Cut small end wrist pin bore and big end crankpin bore through the merged body
+    Cylinder(
+        radius=d_pin_mm / 2.0,
+        height=w_small_mm + 4.0,
+        rotation=(0, 90, 0),
+        mode=Mode.SUBTRACT,
+    )
+    with Locations((0, l_mm, 0)):
+      Cylinder(
+          radius=d_crank_mm / 2.0,
+          height=w_big_mm + 4.0,
+          rotation=(0, 90, 0),
+          mode=Mode.SUBTRACT,
+      )
 
   return rod.part

@@ -2,10 +2,14 @@
 
 from build123d import (
     BuildPart,
+    BuildSketch,
+    Circle,
     Cylinder,
     Locations,
     Mode,
     Part,
+    Plane,
+    extrude,
 )
 
 
@@ -14,7 +18,7 @@ def generate_piston(
     wrist_pin_diam_m: float = 0.016,
     compression_height_m: float = 0.024,
     total_height_m: float = 0.042,
-    crown_thickness_m: float = 0.0055,
+    crown_thickness_m: float = 0.0070,
     skirt_wall_thickness_m: float = 0.0025,
 ) -> Part:
   """Generate a parametric solid B-Rep piston using build123d."""
@@ -33,27 +37,23 @@ def generate_piston(
     )
 
     # 2. Ring Grooves (Top compression ring groove)
-    # Top land: 4 mm from crown top, 1.2 mm groove width, 2.5 mm radial depth
+    # Top land: 4 mm from crown top, 1.2 mm groove width, 2.0 mm radial depth
     ring1_z = (h_total / 2.0) - 4.0 - 0.6
-    with Locations((0, 0, ring1_z)):
-      Cylinder(
-          radius=r_outer + 1.0,
-          height=1.2,
-          mode=Mode.SUBTRACT,
-      )
-      Cylinder(
-          radius=r_outer - 2.5,
-          height=1.2,
-          mode=Mode.ADD,
-      )
+    with BuildSketch(Plane.XY.offset(ring1_z)):
+      Circle(r_outer + 0.5)
+      Circle(r_outer - 2.0, mode=Mode.SUBTRACT)
+    extrude(amount=1.2, mode=Mode.SUBTRACT)
 
     # 3. Hollow out underside skirt cavity (leaving crown and skirt wall)
     r_inner = r_outer - (skirt_wall_thickness_m * 1000.0)
-    h_cavity = h_total - t_crown
-    with Locations((0, 0, -t_crown / 2.0)):
+    z_cavity_top = (h_total / 2.0) - t_crown
+    z_cavity_bot = -h_total / 2.0
+    h_cavity = z_cavity_top - z_cavity_bot
+    z_cavity_mid = (z_cavity_top + z_cavity_bot) / 2.0
+    with Locations((0, 0, z_cavity_mid)):
       Cylinder(
           radius=r_inner,
-          height=h_cavity + 1.0,
+          height=h_cavity,
           mode=Mode.SUBTRACT,
       )
 
