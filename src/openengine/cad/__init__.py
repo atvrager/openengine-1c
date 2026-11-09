@@ -1,6 +1,12 @@
 """Parametric CAD solid modeling modules based on build123d and Open CASCADE."""
 
 from .connecting_rod import generate_connecting_rod
+from .cylinder_block import (
+    CylinderBlockParams,
+    calculate_block_thermal_capacity,
+    generate_cylinder_block,
+    generate_cylinder_liner,
+)
 from .cylinder_head import (
     CylinderHeadParams,
     calculate_combustion_chamber_volume,
@@ -18,4 +24,8 @@ __all__ = [
     "extract_intake_port_fluid_domain",
     "calculate_combustion_chamber_volume",
     "CylinderHeadParams",
+    "generate_cylinder_block",
+    "generate_cylinder_liner",
+    "calculate_block_thermal_capacity",
+    "CylinderBlockParams",
 ]

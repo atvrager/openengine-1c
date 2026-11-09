@@ -4,10 +4,13 @@ from pathlib import Path
 from build123d import export_step
 import numpy as np
 from openengine.cad import (
+    calculate_block_thermal_capacity,
     calculate_combustion_chamber_volume,
     extract_intake_port_fluid_domain,
     generate_connecting_rod,
+    generate_cylinder_block,
     generate_cylinder_head,
+    generate_cylinder_liner,
     generate_piston,
     generate_poppet_valve,
 )
@@ -362,6 +365,21 @@ def cad(
   fluid_file = out_path / "intake_fluid_domain.step"
   export_step(fluid, fluid_file)
   rich.print(f"[green]Saved CFD fluid domain ({fluid.volume/1000:.1f} cm³) to: {fluid_file}[/green]")
+
+  rich.print("[cyan]Generating Cast Iron Cylinder Liner via build123d...[/cyan]")
+  liner = generate_cylinder_liner()
+  liner_file = out_path / "cylinder_liner.step"
+  export_step(liner, liner_file)
+  rich.print(f"[green]Saved cylinder liner ({liner.volume/1000:.1f} cm³, {(liner.volume/1000)*7.2:.0f} g) to: {liner_file}[/green]")
+
+  rich.print("[cyan]Generating Aluminum Cylinder Block with Radial Cooling Fins via build123d...[/cyan]")
+  block = generate_cylinder_block()
+  block_file = out_path / "cylinder_block.step"
+  export_step(block, block_file)
+  therm = calculate_block_thermal_capacity()
+  rich.print(
+      f"[green]Saved cylinder block ({block.volume/1000:.1f} cm³, {therm['exterior_area_m2']:.3f} m² fin area, {therm['thermal_dissipation_w']:.0f} W cooling) to: {block_file}[/green]"
+  )
 
 
 @app.command()
