@@ -19,8 +19,12 @@ from openengine.cad import (
     verify_assembly_clearances,
 )
 from openengine.cfd import (
+    ChtCoolingConfig,
+    ClosedLoopConfig,
     CombustionConfig,
     PortFlowConfig,
+    run_cht_simulation,
+    run_closed_loop_calibration,
     run_combustion_simulation,
     run_port_flow_sweep,
 )
@@ -547,6 +551,87 @@ def cfd_combustion(
 
   rich.print(table)
   rich.print(f"[bold green]Saved combustion results to: {json_file}[/bold green]")
+
+
+@app.command(name="cfd-cht-cooling")
+def cfd_cht_cooling(
+    ambient_temp_c: float = 27.0,
+    fin_h_coeff: float = 75.0,
+    output_dir: str = "outputs/cfd",
+):
+  """Run Conjugate Heat Transfer (CHT) air-fin thermal cooling simulation via OpenFOAM laplacianFoam."""
+  rich.print(f"[cyan]Running air-fin thermal cooling CHT simulation (T_amb = {ambient_temp_c:.1f}°C, h = {fin_h_coeff:.1f} W/m²K)...[/cyan]")
+
+  cfg = ChtCoolingConfig(
+      ambient_temp_k=ambient_temp_c + 273.15,
+      fin_h_coeff=fin_h_coeff,
+  )
+  out_path = Path(output_dir)
+  case_dir = out_path / "case_cht"
+  res = run_cht_simulation(config=cfg, case_dir=case_dir)
+
+  json_file = out_path / "cht_cooling_results.json"
+  res.to_json(json_file)
+
+  table = Table(
+      title="Cylinder Block Air-Fin CHT Thermal Simulation (OpenFOAM laplacianFoam)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Metric", style="magenta")
+  table.add_column("Value", style="bold green")
+
+  table.add_row("Mesh Cells", f"{res.total_cells:,} tets")
+  table.add_row("Exterior Cooling Fin Area", f"{res.exterior_fin_area_m2:.4f} m²")
+  table.add_row("Max Liner Temperature", f"{res.max_liner_temp_k - 273.15:.1f}°C ({res.max_liner_temp_k:.1f} K) [Limit <= 180°C]")
+  table.add_row("Min Fin Tip Temperature", f"{res.min_fin_temp_k - 273.15:.1f}°C ({res.min_fin_temp_k:.1f} K)")
+  table.add_row("Mean Block Temperature", f"{res.mean_block_temp_k - 273.15:.1f}°C ({res.mean_block_temp_k:.1f} K)")
+  table.add_row("Heat Dissipation Rate", f"{res.heat_dissipated_w:.1f} W (Combustion Budget: {res.config.heat_budget_w:.0f} W)")
+  table.add_row("Thermal Safety Margin", f"{res.thermal_margin_percent:+.1f}% ({'PASS' if res.is_thermal_safe else 'FAIL'})")
+  table.add_row("Simulation Solve Time", f"{res.solve_time_s:.2f} s")
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved CHT thermal results to: {json_file}[/bold green]")
+
+
+@app.command(name="cfd-closed-loop")
+def cfd_closed_loop(
+    output_dir: str = "outputs/calibration",
+):
+  """Run 3D-to-0D closed-loop thermodynamic calibration using CFD combustion, port flow, and CHT metrics."""
+  rich.print("[cyan]Running 3D-to-0D closed-loop thermodynamic calibration...[/cyan]")
+
+  out_path = Path(output_dir)
+  json_file = out_path / "closed_loop_results.json"
+  res = run_closed_loop_calibration(output_json_path=json_file)
+
+  table = Table(
+      title="3D CFD -> 0D Cycle Closed-Loop Thermodynamic Calibration",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Parameter / Metric", style="magenta")
+  table.add_column("Baseline (Empirical 0D)", style="yellow")
+  table.add_column("Calibrated (3D CFD Couplings)", style="bold green")
+  table.add_column("Delta (%)", style="cyan")
+
+  table.add_row("Wiebe Parameter a", "5.000", f"{res.calibrated_wiebe_a:.3f}", f"{(res.calibrated_wiebe_a - 5.0)/5.0*100:+.1f}%")
+  table.add_row("Wiebe Form Factor m", "2.000", f"{res.calibrated_wiebe_m:.3f}", f"{(res.calibrated_wiebe_m - 2.0)/2.0*100:+.1f}%")
+  table.add_row("Combustion Duration", "42.0° CA", f"{res.calibrated_wiebe_duration_deg:.1f}° CA", f"{(res.calibrated_wiebe_duration_deg - 42.0)/42.0*100:+.1f}%")
+  table.add_row("Spark Timing (SOC)", "-15.0° CA", f"{res.calibrated_wiebe_soc_deg:.1f}° CA", f"{(res.calibrated_wiebe_soc_deg - (-15.0))/15.0*100:+.1f}%")
+  table.add_row("Intake Curtain Discharge Cd", "0.650", f"{res.calibrated_intake_cd:.3f}", f"{(res.calibrated_intake_cd - 0.650)/0.650*100:+.1f}%")
+  table.add_row("Cylinder Liner Wall Temp", "430.0 K", f"{res.calibrated_wall_temp_k:.1f} K", f"{(res.calibrated_wall_temp_k - 430.0)/430.0*100:+.1f}%")
+  table.add_row("---", "---", "---", "---")
+  table.add_row("Peak Cylinder Pressure", f"{res.baseline.p_max_bar:.2f} bar", f"{res.calibrated.p_max_bar:.2f} bar", f"{(res.calibrated.p_max_bar - res.baseline.p_max_bar)/res.baseline.p_max_bar*100:+.1f}%")
+  table.add_row("Peak In-Cylinder Temp", f"{res.baseline.t_max_k:.1f} K", f"{res.calibrated.t_max_k:.1f} K", f"{(res.calibrated.t_max_k - res.baseline.t_max_k)/res.baseline.t_max_k*100:+.1f}%")
+  table.add_row("Indicated Mean Eff. Press. (IMEP)", f"{res.baseline.imep_bar:.2f} bar", f"{res.calibrated.imep_bar:.2f} bar", f"{res.delta_imep_percent:+.1f}%")
+  table.add_row("Indicated Power @ 5500 RPM", f"{res.baseline.indicated_power_kw:.2f} kW", f"{res.calibrated.indicated_power_kw:.2f} kW", f"{res.delta_power_percent:+.1f}%")
+  table.add_row("Indicated Torque @ 5500 RPM", f"{res.baseline.indicated_torque_nm:.2f} N·m", f"{res.calibrated.indicated_torque_nm:.2f} N·m", f"{res.delta_power_percent:+.1f}%")
+  table.add_row("Indicated Thermal Efficiency", f"{res.baseline.thermal_efficiency*100:.1f}%", f"{res.calibrated.thermal_efficiency*100:.1f}%", f"{(res.calibrated.thermal_efficiency - res.baseline.thermal_efficiency)/res.baseline.thermal_efficiency*100:+.1f}%")
+  table.add_row("Indicated Spec. Fuel Cons. (ISFC)", f"{res.baseline.isfc_g_per_kwh:.1f} g/kWh", f"{res.calibrated.isfc_g_per_kwh:.1f} g/kWh", f"{(res.calibrated.isfc_g_per_kwh - res.baseline.isfc_g_per_kwh)/res.baseline.isfc_g_per_kwh*100:+.1f}%")
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved closed-loop calibration results to: {json_file}[/bold green]")
 
 
 if __name__ == "__main__":

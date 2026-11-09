@@ -108,6 +108,10 @@ class ClosedCycleSimulator:
       p_init_pa: float = 101325.0,
       t_init_k: float = 330.0,
       n_points: int = 720,
+      theta_soc_deg: float = -15.0,
+      duration_deg: float = 42.0,
+      wiebe_a: float = 5.0,
+      wiebe_m: float = 2.0,
   ) -> CycleResults:
     """Solve the closed portion of the 4-stroke cycle (-180 to +180 deg CA)."""
     theta = np.linspace(-180.0, 180.0, n_points)
@@ -119,7 +123,13 @@ class ClosedCycleSimulator:
     m_fuel = m_charge / (1.0 + self.afr)
     total_heat_release = m_fuel * self.q_fuel * 0.90  # 90% combustion efficiency
 
-    xb = wiebe_burned_fraction(theta)
+    xb = wiebe_burned_fraction(
+        theta,
+        theta_soc_deg=theta_soc_deg,
+        duration_deg=duration_deg,
+        a=wiebe_a,
+        m=wiebe_m,
+    )
 
     p = np.zeros_like(theta)
     t = np.zeros_like(theta)

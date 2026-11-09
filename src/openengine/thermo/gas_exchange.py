@@ -158,6 +158,10 @@ class FourStrokeSimulator:
       use_woschni: bool = True,
       t_wall_k: float = 430.0,
       use_cantera: bool = True,
+      wiebe_soc_deg: float = -15.0,
+      wiebe_duration_deg: float = 42.0,
+      wiebe_a: float = 5.0,
+      wiebe_m: float = 2.0,
   ):
     self.geom = geom
     self.valves = valves
@@ -171,6 +175,10 @@ class FourStrokeSimulator:
     self.use_woschni = use_woschni
     self.t_wall_k = t_wall_k
     self.use_cantera = use_cantera
+    self.wiebe_soc_deg = wiebe_soc_deg
+    self.wiebe_duration_deg = wiebe_duration_deg
+    self.wiebe_a = wiebe_a
+    self.wiebe_m = wiebe_m
     self.woschni = WoschniHeatTransfer(geom, t_wall_k=t_wall_k)
     if use_cantera:
       self.cantera_chem = CanteraThermochemistry()
@@ -255,9 +263,21 @@ class FourStrokeSimulator:
       # 3. Combustion Heat Release (Wiebe model active around firing TDC: 680..740 deg)
       ca_firing = th_mod - 720.0 if th_mod > 360.0 else th_mod
       dxb_dth = 0.0
-      if -15.0 <= ca_firing <= 30.0:
-        xb1 = wiebe_burned_fraction(ca_firing)
-        xb2 = wiebe_burned_fraction(ca_firing + 0.1)
+      if self.wiebe_soc_deg <= ca_firing <= (self.wiebe_soc_deg + self.wiebe_duration_deg):
+        xb1 = wiebe_burned_fraction(
+            ca_firing,
+            theta_soc_deg=self.wiebe_soc_deg,
+            duration_deg=self.wiebe_duration_deg,
+            a=self.wiebe_a,
+            m=self.wiebe_m,
+        )
+        xb2 = wiebe_burned_fraction(
+            ca_firing + 0.1,
+            theta_soc_deg=self.wiebe_soc_deg,
+            duration_deg=self.wiebe_duration_deg,
+            a=self.wiebe_a,
+            m=self.wiebe_m,
+        )
         dxb_dth = (xb2 - xb1) / (0.1 * np.pi / 180.0)  # dxb/dtheta in rad^-1
 
       m_fuel = m / (1.0 + self.afr)

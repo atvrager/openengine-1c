@@ -1,5 +1,18 @@
 """Computational Fluid Dynamics (CFD) simulation suite."""
 
+from openengine.cfd.cht_cooling import (
+    ChtCoolingConfig,
+    ChtCoolingResult,
+    generate_finned_block_mesh,
+    run_cht_simulation,
+    setup_cht_case,
+)
+from openengine.cfd.closed_loop import (
+    ClosedLoopCalibrationResult,
+    ClosedLoopConfig,
+    CycleComparisonMetrics,
+    run_closed_loop_calibration,
+)
 from openengine.cfd.combustion import (
     CombustionConfig,
     CombustionResult,
@@ -22,6 +35,15 @@ from openengine.cfd.port_bench import (
 )
 
 __all__ = [
+    "ChtCoolingConfig",
+    "ChtCoolingResult",
+    "generate_finned_block_mesh",
+    "run_cht_simulation",
+    "setup_cht_case",
+    "ClosedLoopCalibrationResult",
+    "ClosedLoopConfig",
+    "CycleComparisonMetrics",
+    "run_closed_loop_calibration",
     "CombustionConfig",
     "CombustionResult",
     "CombustionStepPoint",
