@@ -1,0 +1,46 @@
+# Material Properties Database for OpenEngine-1C
+materials:
+  al4032_t6:
+    name: "Aluminum 4032-T6 (Piston Alloy)"
+    density: 2680.0                # [kg/m^3]
+    elastic_modulus: 79.0e9        # [Pa]
+    poisson_ratio: 0.33            # [-]
+    yield_strength_room: 315.0e6   # [Pa] at 20 C
+    yield_strength_hot: 140.0e6    # [Pa] at 250 C
+    thermal_conductivity: 154.0    # [W/(m*K)]
+    thermal_expansion: 19.4e-6     # [1/K]
+    applications: ["piston"]
+
+  steel_4340:
+    name: "AISI 4340 Alloy Steel (Quenched & Tempered)"
+    density: 7850.0                # [kg/m^3]
+    elastic_modulus: 205.0e9       # [Pa]
+    poisson_ratio: 0.29            # [-]
+    yield_strength: 860.0e6        # [Pa]
+    tensile_strength: 1080.0e6     # [Pa]
+    endurance_limit: 490.0e6       # [Pa] (Fatigue limit)
+    thermal_conductivity: 44.5     # [W/(m*K)]
+    thermal_expansion: 12.3e-6     # [1/K]
+    applications: ["connecting_rod", "crankshaft", "wrist_pin"]
+
+  cast_iron_fc250:
+    name: "Grey Cast Iron Class 35 / FC250 (Cylinder Sleeve)"
+    density: 7200.0                # [kg/m^3]
+    elastic_modulus: 110.0e9       # [Pa]
+    poisson_ratio: 0.26            # [-]
+    tensile_strength: 250.0e6      # [Pa]
+    compressive_strength: 825.0e6  # [Pa]
+    thermal_conductivity: 48.0     # [W/(m*K)]
+    thermal_expansion: 11.0e-6     # [1/K]
+    applications: ["cylinder_sleeve"]
+
+  al_a380:
+    name: "Die-Cast Aluminum A380 (Cylinder Block & Head)"
+    density: 2710.0                # [kg/m^3]
+    elastic_modulus: 71.0e9        # [Pa]
+    poisson_ratio: 0.33            # [-]
+    yield_strength: 160.0e6        # [Pa]
+    tensile_strength: 320.0e6      # [Pa]
+    thermal_conductivity: 96.0     # [W/(m*K)]
+    thermal_expansion: 21.8e-6     # [1/K]
+    applications: ["cylinder_block", "cylinder_head"]

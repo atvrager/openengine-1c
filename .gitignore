@@ -1,0 +1,32 @@
+# Environments
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Simulation outputs
+outputs/
+*.step
+*.stp
+*.stl
+*.frd
+*.dat
+*.inp
+*.vtk
+*.vtu
+
+# OpenFOAM generated mesh and time directories
+cases/**/constant/polyMesh/
+cases/**/[0-9]*/
+cases/**/[0-9]*.[0-9]*/
+cases/**/log.*
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/

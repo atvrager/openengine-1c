@@ -1,0 +1,44 @@
+# OpenEngine-1C: Reference Engine Specification (200cc SOHC Single Cylinder)
+engine:
+  name: "OpenEngine-200-SOHC"
+  type: "4-stroke, spark-ignition, single-cylinder"
+  valvetrain: "SOHC, 2-valve, roller rocker"
+  cooling: "air-cooled, perimeter fins"
+  fuel: "gasoline (iso-octane surrogate)"
+
+geometry:
+  bore: 0.068             # [m] 68 mm
+  stroke: 0.054           # [m] 54 mm
+  con_rod_length: 0.108   # [m] 108 mm (lambda = r/L = 0.25)
+  compression_ratio: 9.8  # [-]
+  wrist_pin_diameter: 0.016 # [m] 16 mm
+  crankpin_diameter: 0.028   # [m] 28 mm
+  main_journal_diameter: 0.030 # [m] 30 mm
+
+valves:
+  intake_diameter: 0.030  # [m] 30 mm
+  exhaust_diameter: 0.026 # [m] 26 mm
+  max_lift: 0.0085        # [m] 8.5 mm
+  intake_angle_deg: 15.0  # Included chamber angle = 30 deg
+  exhaust_angle_deg: 15.0
+
+operating_conditions:
+  rated_rpm: 5500.0       # [RPM]
+  redline_rpm: 7000.0     # [RPM]
+  idle_rpm: 1400.0        # [RPM]
+  inlet_pressure: 101325  # [Pa]
+  inlet_temperature: 298.15 # [K]
+  air_fuel_ratio: 14.7    # Stoichiometric air-fuel ratio
+  spark_timing_deg_btdc: 22.0 # [deg CA before TDC]
+
+combustion_model:
+  type: "wiebe"
+  a: 5.0
+  m: 2.0
+  duration_deg: 42.0
+  start_deg_btdc: 15.0
+
+balancing:
+  rotating_balance_factor: 1.0     # 100% rotating mass counterweighted
+  reciprocating_balance_factor: 0.5 # 50% reciprocating mass counterweighted
+  speed_fluctuation_target: 0.035  # Max 3.5% speed fluctuation
