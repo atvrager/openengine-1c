@@ -46,6 +46,12 @@ from openengine.fea import (
     run_piston_fea,
 )
 from openengine.infra.podman import PodmanRunner
+from openengine.reporting import (
+    export_cad_models_to_gltf,
+    export_fea_stress_to_webgl,
+    generate_interactive_dashboard,
+    generate_markdown_summary,
+)
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
 from openengine.thermo.gas_exchange import FourStrokeSimulator, ValveGeometry, ValveTiming
 import rich
@@ -782,6 +788,109 @@ def fea_all(
 
   elapsed = time.time() - t0
   rich.print(f"[bold green]Complete Phase 4 FEA Suite finished in {elapsed:.2f} s![/bold green]")
+
+
+@app.command(name="report")
+def generate_report(
+    output_dir: str = "outputs/reports",
+):
+  """Generate interactive 3D WebGL (Three.js) dashboard, glTF CAD models, FEA stress meshes, and Markdown summary."""
+  rich.print("[bold cyan]Generating Multi-Physics WebGL 3D Dashboard & Verification Reports...[/bold cyan]")
+  t0 = time.time()
+  out_path = Path(output_dir)
+  models_dir = out_path / "models"
+  models_dir.mkdir(parents=True, exist_ok=True)
+
+  # 1. Export CAD models to binary glTF (.glb)
+  rich.print("[cyan]Exporting CAD solid B-Rep models to binary glTF (.glb)...[/cyan]")
+  export_cad_models_to_gltf(models_dir)
+
+  # 2. Export FEA stress meshes for Three.js
+  piston_frd = Path("outputs/fea/piston/piston_lc1.frd")
+  piston_inp = Path("outputs/fea/piston/piston_mesh.inp")
+  if piston_frd.exists() and piston_inp.exists():
+    export_fea_stress_to_webgl(
+        frd_path=piston_frd,
+        inp_path=piston_inp,
+        output_json_path=models_dir / "piston_lc1_stress.json",
+        title="Piston LC-1 Firing TDC Peak Pressure",
+        component_name="Piston",
+        yield_strength_mpa=315.0,
+    )
+
+  conrod_frd = Path("outputs/fea/conrod/conrod_lc3a.frd")
+  conrod_inp = Path("outputs/fea/conrod/conrod_mesh.inp")
+  if conrod_frd.exists() and conrod_inp.exists():
+    export_fea_stress_to_webgl(
+        frd_path=conrod_frd,
+        inp_path=conrod_inp,
+        output_json_path=models_dir / "conrod_lc3a_stress.json",
+        title="Connecting Rod LC-3A Firing Compression",
+        component_name="Connecting Rod",
+        yield_strength_mpa=850.0,
+    )
+
+  # 3. Generate interactive HTML5 dashboard
+  html_path = out_path / "engineering_dashboard.html"
+  generate_interactive_dashboard(
+      output_html_path=html_path,
+      models_dir=models_dir,
+  )
+
+  # 4. Generate Markdown summary
+  md_path = out_path / "summary.md"
+  generate_markdown_summary(output_md_path=md_path)
+
+  elapsed = time.time() - t0
+  rich.print(f"[bold green]Report generation completed in {elapsed:.2f} s![/bold green]")
+  rich.print(f"[bold green]Interactive 3D Dashboard: {html_path}[/bold green]")
+  rich.print(f"[bold green]Markdown Verification Summary: {md_path}[/bold green]")
+
+
+@app.command(name="run-all")
+def run_all(
+    quick: bool = typer.Option(True, "--quick/--full", help="Run in fast verification mode (< 60s)"),
+    output_dir: str = "outputs",
+):
+  """Run the complete end-to-end multi-physics pipeline (0D -> Dynamics -> CAD -> CFD -> FEA -> Dashboard)."""
+  rich.print("[bold cyan]====================================================================[/bold cyan]")
+  rich.print(f"[bold cyan]  OpenEngine-1C: Full Multi-Physics Autonomous Engineering Pipeline [/bold cyan]")
+  rich.print(f"[bold cyan]  Mode: {'QUICK (<60s)' if quick else 'FULL HIGH-RES'}                           [/bold cyan]")
+  rich.print("[bold cyan]====================================================================[/bold cyan]")
+  t_total_start = time.time()
+
+  # Phase 1: 0D Thermo & Valvetrain Dynamics
+  rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics & Valvetrain Dynamics...[/bold yellow]")
+  thermo_cycle()
+  cam_profile()
+  slider_crank()
+  flywheel()
+  bearing()
+
+  # Phase 2: Parametric B-Rep CAD
+  rich.print("\n[bold yellow]>>> Step 2: Parametric Solid CAD Generation (STEP)...[/bold yellow]")
+  cad_all(output_dir=f"{output_dir}/cad")
+
+  # Phase 3: CFD, Combustion, CHT, and Closed-Loop Calibration
+  rich.print("\n[bold yellow]>>> Step 3: CFD & Moving-Mesh Combustion...[/bold yellow]")
+  cfd_port_bench(output_dir=f"{output_dir}/cfd")
+  cfd_combustion(output_dir=f"{output_dir}/cfd")
+  cfd_cht_cooling(output_dir=f"{output_dir}/cfd")
+  cfd_closed_loop(output_dir=f"{output_dir}/calibration")
+
+  # Phase 4: Structural & Thermal FEA (CalculiX)
+  rich.print("\n[bold yellow]>>> Step 4: Structural & Thermal FEA (CalculiX ccx)...[/bold yellow]")
+  fea_all(output_dir=f"{output_dir}/fea")
+
+  # Phase 5: Synthesis, Interactive 3D WebGL Dashboard & Summary Report
+  rich.print("\n[bold yellow]>>> Step 5: Interactive 3D Dashboard & Verification Reports...[/bold yellow]")
+  generate_report(output_dir=f"{output_dir}/reports")
+
+  t_total_elapsed = time.time() - t_total_start
+  rich.print("\n[bold green]====================================================================[/bold green]")
+  rich.print(f"[bold green]  OpenEngine-1C Pipeline Complete! Total Runtime: {t_total_elapsed:.2f} s       [/bold green]")
+  rich.print(f"[bold green]  Interactive 3D Dashboard: {output_dir}/reports/engineering_dashboard.html[/bold green]")
+  rich.print("[bold green]====================================================================[/bold green]")
 
 
 if __name__ == "__main__":
