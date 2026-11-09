@@ -7,6 +7,7 @@ from openengine.cad.piston import generate_piston
 from openengine.dynamics.slider_crank import SliderCrankDynamics
 from openengine.infra.podman import PodmanRunner
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
+from openengine.thermo.gas_exchange import FourStrokeSimulator, ValveGeometry, ValveTiming
 import rich
 from rich.table import Table
 import typer
@@ -53,8 +54,12 @@ def info(config_path: str = "config/engine_specs.yaml"):
 
 
 @app.command()
-def thermo(config_path: str = "config/engine_specs.yaml"):
-  """Run 0D thermodynamic closed-cycle simulation."""
+def thermo(
+    config_path: str = "config/engine_specs.yaml",
+    rpm: float = 0.0,
+    closed_only: bool = False,
+):
+  """Run thermodynamic simulation (full 720-deg 4-stroke breathing or closed-cycle)."""
   cfg = load_config(config_path)
   g = cfg["geometry"]
   geom = EngineGeometry(
@@ -64,34 +69,70 @@ def thermo(config_path: str = "config/engine_specs.yaml"):
       compression_ratio=g["compression_ratio"],
   )
 
-  sim = ClosedCycleSimulator(geom)
-  res = sim.solve_cycle()
+  target_rpm = rpm if rpm > 0.0 else float(cfg["operating_conditions"]["rated_rpm"])
 
-  table = Table(
-      title="0D Thermodynamic Cycle Results",
-      show_header=True,
-      header_style="bold blue",
-  )
-  table.add_column("Output Metric", style="cyan")
-  table.add_column("Simulated Value", style="bold green")
+  if closed_only:
+    sim = ClosedCycleSimulator(geom)
+    res = sim.solve_cycle()
 
-  table.add_row("Displacement", f"{geom.displacement * 1.0e6:.1f} cm³")
-  table.add_row(
-      "Peak Cylinder Pressure (P_max)", f"{res.p_max_pa / 1.0e6:.2f} MPa"
-  )
-  table.add_row("Peak Temperature (T_max)", f"{res.t_max_k:.0f} K")
-  table.add_row("Indicated Work per Cycle", f"{res.indicated_work_j:.1f} J")
-  table.add_row("IMEP", f"{res.imep_pa / 1.0e5:.2f} bar")
-  table.add_row(
-      "Indicated Thermal Efficiency", f"{res.thermal_efficiency * 100:.1f} %"
-  )
+    table = Table(
+        title="0D Closed-Cycle Thermodynamic Results",
+        show_header=True,
+        header_style="bold blue",
+    )
+    table.add_column("Output Metric", style="cyan")
+    table.add_column("Simulated Value", style="bold green")
 
-  rich.print(table)
+    table.add_row("Displacement", f"{geom.displacement * 1.0e6:.1f} cm³")
+    table.add_row("Peak Pressure (P_max)", f"{res.p_max_pa / 1.0e6:.2f} MPa")
+    table.add_row("Peak Temperature (T_max)", f"{res.t_max_k:.0f} K")
+    table.add_row("Indicated Work per Cycle", f"{res.indicated_work_j:.1f} J")
+    table.add_row("IMEP", f"{res.imep_pa / 1.0e5:.2f} bar")
+    table.add_row("Thermal Efficiency", f"{res.thermal_efficiency * 100:.1f} %")
+    rich.print(table)
+  else:
+    # Full 720-degree 4-stroke breathing cycle
+    v_cfg = cfg.get("valves", {})
+    valves = ValveGeometry(
+        intake_diameter_m=v_cfg.get("intake_diameter", 0.030),
+        exhaust_diameter_m=v_cfg.get("exhaust_diameter", 0.026),
+        intake_max_lift_m=v_cfg.get("max_lift", 0.0085),
+        exhaust_max_lift_m=v_cfg.get("max_lift", 0.0080),
+    )
+    sim = FourStrokeSimulator(geom, valves=valves)
+    res = sim.solve_cycle(rpm=target_rpm)
+
+    table = Table(
+        title=f"720° Four-Stroke Engine Cycle & Breathing @ {target_rpm:.0f} RPM",
+        show_header=True,
+        header_style="bold blue",
+    )
+    table.add_column("Cycle Metric", style="cyan")
+    table.add_column("Value", style="bold green")
+
+    table.add_row("Displacement", f"{geom.displacement * 1.0e6:.1f} cm³")
+    table.add_row("Volumetric Efficiency (η_v)", f"{res.volumetric_efficiency * 100:.1f} %")
+    table.add_row("Trapped Air-Fuel Mass", f"{res.trapped_mass_kg * 1.0e6:.1f} mg / cycle")
+    table.add_row("Peak Cylinder Pressure (P_max)", f"{res.p_max_pa / 1.0e6:.2f} MPa")
+    table.add_row("Peak Gas Temperature (T_max)", f"{res.t_max_k:.0f} K")
+    table.add_row("Gross Indicated Work (High-P loop)", f"{res.gross_work_j:.1f} J")
+    table.add_row("Pumping Work Loss (Low-P loop)", f"{res.pump_work_j:.1f} J")
+    table.add_row("Net Indicated Work (W_net)", f"{res.net_work_j:.1f} J")
+    table.add_row("GIMEP (Gross IMEP)", f"{res.gimep_pa / 1.0e5:.2f} bar")
+    table.add_row("PMEP (Pumping Loss MEP)", f"{res.pmep_pa / 1.0e5:.2f} bar")
+    table.add_row("NIMEP (Net Indicated MEP)", f"{res.nimep_pa / 1.0e5:.2f} bar")
+    table.add_row("Indicated Engine Power", f"{res.power_kw:.2f} kW ({res.power_kw * 1.341:.1f} hp)")
+    table.add_row("Indicated Engine Torque", f"{res.torque_nm:.2f} N·m")
+
+    rich.print(table)
 
 
 @app.command()
-def dynamics(config_path: str = "config/engine_specs.yaml"):
-  """Run slider-crank kinematic force and flywheel balancing calculations."""
+def dynamics(
+    config_path: str = "config/engine_specs.yaml",
+    rpm: float = 0.0,
+):
+  """Run slider-crank kinematic force and flywheel balancing calculations across full 720-deg cycle."""
   cfg = load_config(config_path)
   g = cfg["geometry"]
   geom = EngineGeometry(
@@ -101,20 +142,21 @@ def dynamics(config_path: str = "config/engine_specs.yaml"):
       compression_ratio=g["compression_ratio"],
   )
 
-  sim = ClosedCycleSimulator(geom)
-  thermo_res = sim.solve_cycle()
+  target_rpm = rpm if rpm > 0.0 else float(cfg["operating_conditions"]["rated_rpm"])
+
+  sim = FourStrokeSimulator(geom)
+  thermo_res = sim.solve_cycle(rpm=target_rpm)
 
   dyn = SliderCrankDynamics(geom)
-  rpm = float(cfg["operating_conditions"]["rated_rpm"])
   forces = dyn.solve_forces(
-      rpm=rpm,
+      rpm=target_rpm,
       theta_deg=thermo_res.theta_deg,
       pressure_pa=thermo_res.pressure_pa,
   )
-  balancer = dyn.size_balancer_and_flywheel(rpm=rpm, forces=forces)
+  balancer = dyn.size_balancer_and_flywheel(rpm=target_rpm, forces=forces)
 
   table = Table(
-      title=f"Mechanism Dynamics & Balancing @ {rpm:.0f} RPM",
+      title=f"Mechanism Dynamics & Balancing @ {target_rpm:.0f} RPM",
       show_header=True,
       header_style="bold yellow",
   )
