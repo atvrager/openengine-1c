@@ -2,9 +2,17 @@
 
 from pathlib import Path
 from build123d import export_step
+import numpy as np
 from openengine.cad.connecting_rod import generate_connecting_rod
 from openengine.cad.piston import generate_piston
-from openengine.dynamics.slider_crank import SliderCrankDynamics
+from openengine.dynamics import (
+    BearingGeometry,
+    FlywheelDimensions,
+    FlywheelDynamics,
+    HydrodynamicBearing,
+    SOHCCamshaft,
+    SliderCrankDynamics,
+)
 from openengine.infra.podman import PodmanRunner
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
 from openengine.thermo.gas_exchange import FourStrokeSimulator, ValveGeometry, ValveTiming
@@ -147,7 +155,7 @@ def dynamics(
     config_path: str = "config/engine_specs.yaml",
     rpm: float = 0.0,
 ):
-  """Run slider-crank kinematic force and flywheel balancing calculations across full 720-deg cycle."""
+  """Run slider-crank dynamics, polar shaking vectors, flywheel sizing, and bearing PV orbit."""
   cfg = load_config(config_path)
   g = cfg["geometry"]
   geom = EngineGeometry(
@@ -167,35 +175,129 @@ def dynamics(
       rpm=target_rpm,
       theta_deg=thermo_res.theta_deg,
       pressure_pa=thermo_res.pressure_pa,
+      recip_balance_factor=0.50,
   )
-  balancer = dyn.size_balancer_and_flywheel(rpm=target_rpm, forces=forces)
+  sweep = dyn.sweep_balance_factors(rpm=target_rpm, forces=forces)
+
+  # Flywheel sizing via FlywheelDynamics
+  fw_dyn = FlywheelDynamics()
+  fw_rep = fw_dyn.size_flywheel(
+      rated_rpm=target_rpm,
+      theta_deg=thermo_res.theta_deg,
+      torque_nm=forces.crankshaft_torque_nm,
+      target_coeff_fluctuation=0.035,
+      redline_rpm=float(cfg["operating_conditions"]["redline_rpm"]),
+  )
+
+  # Big-end bearing lubrication via HydrodynamicBearing
+  f_big_end = np.sqrt(forces.net_wrist_pin_force_n**2 + forces.cylinder_side_thrust_n**2)
+  big_end_bearing = HydrodynamicBearing(
+      geom=BearingGeometry(
+          name="Con-Rod Big-End Journal",
+          journal_diameter_m=g.get("crankpin_diameter", 0.030),
+          bearing_width_m=0.016,
+          radial_clearance_m=20.0e-6,
+      )
+  )
+  bearing_rep = big_end_bearing.analyze_bearing_safety(
+      rpm=target_rpm,
+      theta_deg=thermo_res.theta_deg,
+      radial_load_n=f_big_end,
+  )
 
   table = Table(
-      title=f"Mechanism Dynamics & Balancing @ {target_rpm:.0f} RPM",
+      title=f"Slider-Crank Mechanism Dynamics & Shaking @ {target_rpm:.0f} RPM",
       show_header=True,
       header_style="bold yellow",
   )
-  table.add_column("Parameter", style="cyan")
+  table.add_column("Mechanism Parameter", style="cyan")
   table.add_column("Value", style="bold green")
 
   piston_force_max = float(max(forces.gas_force_n))
   table.add_row("Peak Gas Force", f"{piston_force_max / 1000.0:.2f} kN")
+  table.add_row("Peak Piston Acceleration", f"{np.max(np.abs(forces.piston_acceleration_m_s2)):.0f} m/s² ({np.max(np.abs(forces.piston_acceleration_m_s2)) / 9.81:.0f} g)")
   table.add_row("Peak Output Torque", f"{forces.peak_torque_nm:.2f} N·m")
   table.add_row("Mean Output Torque", f"{forces.mean_torque_nm:.2f} N·m")
-  table.add_row(
-      "Required Counterweight Mass",
-      f"{balancer.counterweight_mass_kg * 1000.0:.1f} g @ r ="
-      f" {balancer.counterweight_radius_m * 1000.0:.1f} mm",
-  )
-  table.add_row(
-      "Required Flywheel Inertia",
-      f"{balancer.flywheel_inertia_kg_m2 * 1000.0:.2f} × 10⁻³ kg·m²",
-  )
-  table.add_row(
-      "Solid Disc Flywheel Mass", f"{balancer.flywheel_mass_kg:.2f} kg"
-  )
-
+  table.add_row("Peak Shaking Force (50% Bal)", f"{forces.peak_shaking_force_n:.1f} N")
+  table.add_row("RMS Shaking Force (50% Bal)", f"{forces.rms_shaking_force_n:.1f} N")
+  table.add_row("Optimal Balance Factor (Min RMS)", f"{sweep.optimal_factor_rms * 100:.0f} % (RMS: {min(sweep.rms_shaking_forces_n):.1f} N)")
   rich.print(table)
+
+  fw_table = Table(
+      title="Flywheel Sizing & Kinetic Fluctuation",
+      show_header=True,
+      header_style="bold magenta",
+  )
+  fw_table.add_column("Flywheel Parameter", style="cyan")
+  fw_table.add_column("Value", style="bold green")
+  fw_table.add_row("Required Inertia (I_fw)", f"{fw_rep.flywheel_inertia_kg_m2 * 1000.0:.2f} × 10⁻³ kg·m²")
+  fw_table.add_row("Speed Fluctuation Coeff (C_s)", f"{fw_rep.actual_fluctuation_coeff * 100:.2f} % (Target <= 3.5%)")
+  fw_table.add_row("Speed Fluctuation Range", f"{fw_rep.min_rpm_at_rated:.0f} to {fw_rep.max_rpm_at_rated:.0f} RPM")
+  fw_table.add_row("Disc Outer Diameter / Hub", f"{fw_dyn.dims.outer_radius_m * 2000:.0f} mm / {fw_dyn.dims.inner_bore_radius_m * 2000:.0f} mm")
+  fw_table.add_row("Rim Axial Thickness", f"{fw_rep.flywheel_thickness_mm:.1f} mm")
+  fw_table.add_row("Flywheel Mass", f"{fw_rep.flywheel_mass_kg:.2f} kg")
+  fw_table.add_row("Rim Hoop Stress @ Redline", f"{fw_rep.hoop_stress_redline_mpa:.1f} MPa")
+  fw_table.add_row("Burst Safety Factor @ Redline", f"{fw_rep.burst_safety_factor_redline:.1f} (Safe: {fw_rep.is_safe})")
+  rich.print(fw_table)
+
+  brg_table = Table(
+      title="Big-End Hydrodynamic Journal Bearing (Ocvirk Solution)",
+      show_header=True,
+      header_style="bold blue",
+  )
+  brg_table.add_column("Bearing Parameter", style="cyan")
+  brg_table.add_column("Value", style="bold green")
+  brg_table.add_row("Journal Diameter × Width", f"{big_end_bearing.geom.journal_diameter_m * 1000:.1f} × {big_end_bearing.geom.bearing_width_m * 1000:.1f} mm")
+  brg_table.add_row("Radial Clearance (c)", f"{big_end_bearing.geom.radial_clearance_m * 1.0e6:.1f} µm")
+  brg_table.add_row("Peak Radial Load", f"{bearing_rep.peak_load_n / 1000.0:.2f} kN")
+  brg_table.add_row("Peak Projected Pressure (P_max)", f"{bearing_rep.peak_pressure_mpa:.1f} MPa (Limit: {bearing_rep.allowable_pressure_mpa:.1f} MPa)")
+  brg_table.add_row("Mean Bearing Pressure", f"{bearing_rep.mean_pressure_mpa:.1f} MPa")
+  brg_table.add_row("Journal Sliding Velocity", f"{bearing_rep.sliding_velocity_m_s:.2f} m/s")
+  brg_table.add_row("Peak PV Factor", f"{bearing_rep.peak_pv_mpa_m_s:.1f} MPa·m/s")
+  brg_table.add_row("Peak Journal Eccentricity (ε_max)", f"{bearing_rep.peak_eccentricity_ratio:.4f}")
+  brg_table.add_row("Minimum Oil Film Thickness (h_min)", f"{bearing_rep.min_film_thickness_um:.2f} µm")
+  brg_table.add_row("Lubrication Lambda Ratio (h_min / R_q)", f"{bearing_rep.min_lambda_ratio:.2f} (Full Hydrodynamic: {bearing_rep.is_hydrodynamic})")
+  rich.print(brg_table)
+
+
+@app.command()
+def valvetrain(
+    config_path: str = "config/engine_specs.yaml",
+):
+  """Run SOHC 4-5-6-7 polynomial valvetrain synthesis, contact stress, and valve float analysis."""
+  cfg = load_config(config_path)
+  rated_rpm = float(cfg["operating_conditions"]["rated_rpm"])
+  redline_rpm = float(cfg["operating_conditions"]["redline_rpm"])
+
+  cam = SOHCCamshaft()
+  intake_rep = cam.analyze_valvetrain_safety(cam.intake_params, rated_rpm=rated_rpm, redline_rpm=redline_rpm)
+  exhaust_rep = cam.analyze_valvetrain_safety(cam.exhaust_params, rated_rpm=rated_rpm, redline_rpm=redline_rpm)
+
+  for rep, p in [(intake_rep, cam.intake_params), (exhaust_rep, cam.exhaust_params)]:
+    table = Table(
+        title=f"SOHC Valvetrain: {rep.cam_name} Cam & Follower Dynamics",
+        show_header=True,
+        header_style="bold green",
+    )
+    table.add_column("Valvetrain Parameter", style="cyan")
+    table.add_column("Synthesized Value", style="bold yellow")
+
+    table.add_row("Motion Law", "4-5-6-7 Polynomial (Zero boundary jerk)")
+    table.add_row("Max Valve Lift", f"{p.max_valve_lift_m * 1000:.2f} mm")
+    table.add_row("Max Cam Lobe Lift", f"{(p.max_valve_lift_m / p.rocker_ratio) * 1000:.2f} mm (Rocker ratio: {p.rocker_ratio:.2f})")
+    table.add_row("Duration", f"{p.duration_crank_deg:.0f}° Crank ({p.duration_crank_deg / 2.0:.0f}° Cam)")
+    table.add_row("Equivalent Valvetrain Mass", f"{cam.spring.equivalent_valve_mass_kg * 1000:.1f} g")
+    table.add_row("Spring Stiffness (k)", f"{cam.spring.spring_rate_n_m / 1000:.1f} N/mm (Preload: {cam.spring.seat_force_preload_n:.0f} N)")
+    table.add_row("Max Valve Acceleration @ 5500 RPM", f"{rep.max_valve_acceleration_m_s2:.0f} m/s² ({rep.max_valve_acceleration_m_s2 / 9.81:.0f} g)")
+    table.add_row("Max Valve Deceleration @ 5500 RPM", f"{rep.max_valve_deceleration_m_s2:.0f} m/s²")
+    table.add_row("Min Contact Force @ 5500 RPM", f"{rep.min_contact_force_at_rated_n:.1f} N")
+    table.add_row("Min Contact Force @ 7000 RPM (Redline)", f"{rep.min_contact_force_at_redline_n:.1f} N")
+    table.add_row("Min Contact Force @ 8400 RPM (1.2× Redline)", f"{rep.min_contact_force_at_test_n:.1f} N")
+    table.add_row("Valve Float RPM", f"{rep.valve_float_rpm:.0f} RPM")
+    table.add_row("Float Safety Margin over 8400 RPM", f"{rep.float_margin_percent:.1f} % (Target >= 30%)")
+    table.add_row("Peak Hertz Contact Stress @ 8400 RPM", f"{rep.peak_hertz_stress_mpa:.1f} MPa (Allowable < 1500 MPa)")
+    table.add_row("Valvetrain Status", "[bold green]PASS (Safe from float & fatigue)[/bold green]" if rep.is_safe else "[bold red]FAIL[/bold red]")
+    rich.print(table)
 
 
 @app.command()

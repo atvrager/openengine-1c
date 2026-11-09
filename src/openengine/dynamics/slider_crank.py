@@ -1,13 +1,14 @@
 """Slider-Crank Mechanism Dynamics, Balancing, and Flywheel Sizing."""
 
 from dataclasses import dataclass
+from typing import Optional, Tuple
 import numpy as np
 from openengine.thermo.cycle import EngineGeometry
 
 
 @dataclass
 class DynamicForces:
-  """Resolved forces and torque as a function of crank angle."""
+  """Resolved forces, shaking vectors, and torque as a function of crank angle."""
 
   theta_deg: np.ndarray
   piston_acceleration_m_s2: np.ndarray
@@ -18,6 +19,22 @@ class DynamicForces:
   crankshaft_torque_nm: np.ndarray
   mean_torque_nm: float
   peak_torque_nm: float
+  shaking_force_x_n: Optional[np.ndarray] = None
+  shaking_force_y_n: Optional[np.ndarray] = None
+  shaking_force_mag_n: Optional[np.ndarray] = None
+  peak_shaking_force_n: float = 0.0
+  rms_shaking_force_n: float = 0.0
+
+
+@dataclass
+class BalanceSweepResult:
+  """Sweep of reciprocating balance factors and resultant shaking forces."""
+
+  balance_factors: np.ndarray
+  peak_shaking_forces_n: np.ndarray
+  rms_shaking_forces_n: np.ndarray
+  optimal_factor_peak: float
+  optimal_factor_rms: float
 
 
 @dataclass
@@ -52,8 +69,9 @@ class SliderCrankDynamics:
       rpm: float,
       theta_deg: np.ndarray,
       pressure_pa: np.ndarray,
+      recip_balance_factor: float = 0.50,
   ) -> DynamicForces:
-    """Compute all instantaneous mechanism forces and torque."""
+    """Compute all instantaneous mechanism forces, torque, and polar shaking vectors."""
     omega = rpm * (2.0 * np.pi / 60.0)
     theta_rad = np.radians(theta_deg)
     r = self.geom.crank_radius
@@ -84,6 +102,21 @@ class SliderCrankDynamics:
     # Crankshaft output torque
     torque = f_net * r * (np.sin(theta_rad) + (lam * np.sin(2.0 * theta_rad)) / (2.0 * cos_beta))
 
+    # Polar shaking forces transmitted to engine mounts:
+    # Counterweight balances 100% rotating unbalance plus a fraction of reciprocating mass
+    # Net unbalance rotating vector in block coordinates:
+    f_net_rot_x = recip_balance_factor * self.m_recip * r * (omega**2) * np.sin(theta_rad)
+    f_net_rot_y = recip_balance_factor * self.m_recip * r * (omega**2) * np.cos(theta_rad)
+
+    # Transverse shaking force: side thrust + net horizontal centrifugal component
+    f_shake_x = f_side + f_net_rot_x
+    # Longitudinal (cylinder axis) shaking force: reciprocating inertia + vertical centrifugal component
+    f_shake_y = f_inertia + f_net_rot_y
+    f_shake_mag = np.sqrt(f_shake_x**2 + f_shake_y**2)
+
+    peak_shake = float(np.max(f_shake_mag))
+    rms_shake = float(np.sqrt(np.mean(f_shake_mag**2)))
+
     return DynamicForces(
         theta_deg=theta_deg,
         piston_acceleration_m_s2=accel,
@@ -94,6 +127,50 @@ class SliderCrankDynamics:
         crankshaft_torque_nm=torque,
         mean_torque_nm=float(np.mean(torque)),
         peak_torque_nm=float(np.max(torque)),
+        shaking_force_x_n=f_shake_x,
+        shaking_force_y_n=f_shake_y,
+        shaking_force_mag_n=f_shake_mag,
+        peak_shaking_force_n=peak_shake,
+        rms_shaking_force_n=rms_shake,
+    )
+
+  def sweep_balance_factors(
+      self,
+      rpm: float,
+      forces: DynamicForces,
+      factors: Optional[np.ndarray] = None,
+  ) -> BalanceSweepResult:
+    """Evaluate peak and RMS shaking forces across a range of reciprocating balance factors."""
+    if factors is None:
+      factors = np.linspace(0.0, 1.0, 21)  # 0% to 100% in 5% steps
+
+    omega = rpm * (2.0 * np.pi / 60.0)
+    theta_rad = np.radians(forces.theta_deg)
+    r = self.geom.crank_radius
+
+    peak_forces = np.zeros_like(factors)
+    rms_forces = np.zeros_like(factors)
+
+    for i, bf in enumerate(factors):
+      f_rot_x = bf * self.m_recip * r * (omega**2) * np.sin(theta_rad)
+      f_rot_y = bf * self.m_recip * r * (omega**2) * np.cos(theta_rad)
+
+      f_sx = forces.cylinder_side_thrust_n + f_rot_x
+      f_sy = forces.inertia_force_n + f_rot_y
+      f_mag = np.sqrt(f_sx**2 + f_sy**2)
+
+      peak_forces[i] = float(np.max(f_mag))
+      rms_forces[i] = float(np.sqrt(np.mean(f_mag**2)))
+
+    opt_peak_idx = int(np.argmin(peak_forces))
+    opt_rms_idx = int(np.argmin(rms_forces))
+
+    return BalanceSweepResult(
+        balance_factors=factors,
+        peak_shaking_forces_n=peak_forces,
+        rms_shaking_forces_n=rms_forces,
+        optimal_factor_peak=float(factors[opt_peak_idx]),
+        optimal_factor_rms=float(factors[opt_rms_idx]),
     )
 
   def size_balancer_and_flywheel(
