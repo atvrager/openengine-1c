@@ -3,8 +3,14 @@
 from pathlib import Path
 from build123d import export_step
 import numpy as np
-from openengine.cad.connecting_rod import generate_connecting_rod
-from openengine.cad.piston import generate_piston
+from openengine.cad import (
+    calculate_combustion_chamber_volume,
+    extract_intake_port_fluid_domain,
+    generate_connecting_rod,
+    generate_cylinder_head,
+    generate_piston,
+    generate_poppet_valve,
+)
 from openengine.dynamics import (
     BearingGeometry,
     FlywheelDimensions,
@@ -305,9 +311,10 @@ def cad(
     config_path: str = "config/engine_specs.yaml",
     output_dir: str = "outputs/cad",
 ):
-  """Generate parametric 3D CAD parts (Piston, Con-Rod) via build123d / Open CASCADE."""
+  """Generate parametric 3D CAD parts (Piston, Con-Rod, Cylinder Head, Valves, CFD Domain)."""
   cfg = load_config(config_path)
   g = cfg["geometry"]
+  v_cfg = cfg.get("valves", {})
 
   out_path = Path(output_dir)
   out_path.mkdir(parents=True, exist_ok=True)
@@ -320,7 +327,7 @@ def cad(
   )
   rod_file = out_path / "connecting_rod.step"
   export_step(rod, rod_file)
-  rich.print(f"[green]Saved connecting rod to: {rod_file}[/green]")
+  rich.print(f"[green]Saved connecting rod ({rod.volume/1000:.1f} cm³) to: {rod_file}[/green]")
 
   rich.print("[cyan]Generating Piston via build123d...[/cyan]")
   piston = generate_piston(
@@ -329,7 +336,32 @@ def cad(
   )
   piston_file = out_path / "piston.step"
   export_step(piston, piston_file)
-  rich.print(f"[green]Saved piston to: {piston_file}[/green]")
+  rich.print(f"[green]Saved piston ({piston.volume/1000:.1f} cm³) to: {piston_file}[/green]")
+
+  rich.print("[cyan]Generating SOHC Pent-Roof Cylinder Head via build123d...[/cyan]")
+  v_mm3, v_cm3 = calculate_combustion_chamber_volume()
+  head = generate_cylinder_head()
+  head_file = out_path / "cylinder_head.step"
+  export_step(head, head_file)
+  rich.print(
+      f"[green]Saved cylinder head ({head.volume/1000:.1f} cm³, chamber dome {v_cm3:.2f} cm³) to: {head_file}[/green]"
+  )
+
+  rich.print("[cyan]Generating Poppet Valves via build123d...[/cyan]")
+  in_valve = generate_poppet_valve(head_diam_m=v_cfg.get("intake_diameter", 0.030))
+  ex_valve = generate_poppet_valve(head_diam_m=v_cfg.get("exhaust_diameter", 0.026))
+  in_valve_file = out_path / "valve_intake.step"
+  ex_valve_file = out_path / "valve_exhaust.step"
+  export_step(in_valve, in_valve_file)
+  export_step(ex_valve, ex_valve_file)
+  rich.print(f"[green]Saved intake valve ({in_valve.volume/1000:.2f} cm³) to: {in_valve_file}[/green]")
+  rich.print(f"[green]Saved exhaust valve ({ex_valve.volume/1000:.2f} cm³) to: {ex_valve_file}[/green]")
+
+  rich.print("[cyan]Extracting CFD Port Flow Fluid Domain via build123d...[/cyan]")
+  fluid = extract_intake_port_fluid_domain()
+  fluid_file = out_path / "intake_fluid_domain.step"
+  export_step(fluid, fluid_file)
+  rich.print(f"[green]Saved CFD fluid domain ({fluid.volume/1000:.1f} cm³) to: {fluid_file}[/green]")
 
 
 @app.command()
