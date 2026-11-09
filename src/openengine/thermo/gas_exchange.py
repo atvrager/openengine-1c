@@ -1,9 +1,11 @@
 """1D Gas Exchange and Full 720-Degree Four-Stroke Engine Cycle Simulator."""
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Dict, Optional, Tuple
 import numpy as np
+from openengine.thermo.cantera_kinetics import CanteraThermochemistry
 from openengine.thermo.cycle import EngineGeometry, wiebe_burned_fraction
+from openengine.thermo.woschni import WoschniHeatTransfer
 from scipy.integrate import solve_ivp
 
 
@@ -118,6 +120,8 @@ class FourStrokeResults:
   temperature_k: np.ndarray
   volume_m3: np.ndarray
   mass_kg: np.ndarray
+  heat_transfer_coeff_w_m2_k: np.ndarray
+  wall_heat_flux_w: np.ndarray
   intake_lift_mm: np.ndarray
   exhaust_lift_mm: np.ndarray
   p_max_pa: float
@@ -132,6 +136,11 @@ class FourStrokeResults:
   volumetric_efficiency: float
   power_kw: float
   torque_nm: float
+  q_wall_loss_j: float
+  mean_cooling_power_w: float
+  peak_heat_flux_mw_m2: float
+  heat_loss_fraction: float
+  equilibrium_species: Dict[str, float]
 
 
 class FourStrokeSimulator:
@@ -146,6 +155,9 @@ class FourStrokeSimulator:
       r_gas: float = 287.05,
       q_fuel: float = 44.0e6,
       afr: float = 14.7,
+      use_woschni: bool = True,
+      t_wall_k: float = 430.0,
+      use_cantera: bool = True,
   ):
     self.geom = geom
     self.valves = valves
@@ -154,8 +166,16 @@ class FourStrokeSimulator:
     self.r_gas = r_gas
     self.q_fuel = q_fuel
     self.afr = afr
-    self.cv = r_gas / (gamma_air - 1.0)
-    self.cp = self.cv + r_gas
+    self.cv0 = r_gas / (gamma_air - 1.0)
+    self.cp0 = self.cv0 + r_gas
+    self.use_woschni = use_woschni
+    self.t_wall_k = t_wall_k
+    self.use_cantera = use_cantera
+    self.woschni = WoschniHeatTransfer(geom, t_wall_k=t_wall_k)
+    if use_cantera:
+      self.cantera_chem = CanteraThermochemistry()
+    else:
+      self.cantera_chem = None
 
   def solve_cycle(
       self,
@@ -176,10 +196,11 @@ class FourStrokeSimulator:
     """
     omega = rpm * (2.0 * np.pi / 60.0)  # rad/s
     rho_inlet = p_inlet_pa / (self.r_gas * t_inlet_k)
+    v_max = self.geom.displacement + self.geom.clearance_volume
 
     # State variables: y = [m, T]
     # Initialize near BDC intake: fresh charge
-    m_init = p_inlet_pa * (self.geom.clearance_volume + self.geom.displacement) / (self.r_gas * t_inlet_k)
+    m_init = p_inlet_pa * v_max / (self.r_gas * t_inlet_k)
     t_init = t_inlet_k
 
     def ode_system(theta_deg, y):
@@ -198,6 +219,11 @@ class FourStrokeSimulator:
       )  # m^3 / rad
       dvdt = dvdth * omega  # m^3 / s
 
+      # Temperature-dependent specific heat capacity (vibrational activation)
+      cv = self.cv0 * (1.0 + 3.8e-4 * max(0.0, t - 300.0))
+      cp = cv + self.r_gas
+      gamma_inst = cp / cv
+
       # Valve areas
       l_in = self.valves.lift(th_mod, self.timing.ivo_deg, self.timing.ivc_deg, self.valves.intake_max_lift_m)
       l_ex = self.valves.lift(th_mod, self.timing.evo_deg, self.timing.evc_deg, self.valves.exhaust_max_lift_m)
@@ -207,27 +233,26 @@ class FourStrokeSimulator:
       # 1. Intake Mass Flow
       if p_inlet_pa >= p:
         # Inflow: fresh air into cylinder
-        m_dot_in = compressible_orifice_flow(p_inlet_pa, t_inlet_k, p, self.valves.intake_cd, a_in, self.gamma, self.r_gas)
-        h_in_net = m_dot_in * self.cp * t_inlet_k
+        m_dot_in = compressible_orifice_flow(p_inlet_pa, t_inlet_k, p, self.valves.intake_cd, a_in, gamma_inst, self.r_gas)
+        h_in_net = m_dot_in * cp * t_inlet_k
       else:
         # Reversion: backflow out of cylinder into intake
-        m_dot_in = -compressible_orifice_flow(p, t, p_inlet_pa, self.valves.intake_cd, a_in, self.gamma, self.r_gas)
-        h_in_net = m_dot_in * self.cp * t
+        m_dot_in = -compressible_orifice_flow(p, t, p_inlet_pa, self.valves.intake_cd, a_in, gamma_inst, self.r_gas)
+        h_in_net = m_dot_in * cp * t
 
       # 2. Exhaust Mass Flow
       if p >= p_exhaust_pa:
         # Blowdown: cylinder gas escaping into exhaust port
-        m_dot_ex = compressible_orifice_flow(p, t, p_exhaust_pa, self.valves.exhaust_cd, a_ex, self.gamma, self.r_gas)
-        h_ex_net = -m_dot_ex * self.cp * t
+        m_dot_ex = compressible_orifice_flow(p, t, p_exhaust_pa, self.valves.exhaust_cd, a_ex, gamma_inst, self.r_gas)
+        h_ex_net = -m_dot_ex * cp * t
       else:
         # Backflow: exhaust gas drawn back in
-        m_dot_ex = -compressible_orifice_flow(p_exhaust_pa, t_exhaust_k, p, self.valves.exhaust_cd, a_ex, self.gamma, self.r_gas)
-        h_ex_net = -m_dot_ex * self.cp * t_exhaust_k
+        m_dot_ex = -compressible_orifice_flow(p_exhaust_pa, t_exhaust_k, p, self.valves.exhaust_cd, a_ex, gamma_inst, self.r_gas)
+        h_ex_net = -m_dot_ex * cp * t_exhaust_k
 
       dmdt = m_dot_in - m_dot_ex
 
       # 3. Combustion Heat Release (Wiebe model active around firing TDC: 680..740 deg)
-      # Normalized to firing TDC (720 deg == 0 deg)
       ca_firing = th_mod - 720.0 if th_mod > 360.0 else th_mod
       dxb_dth = 0.0
       if -15.0 <= ca_firing <= 30.0:
@@ -239,10 +264,28 @@ class FourStrokeSimulator:
       q_total = m_fuel * self.q_fuel * 0.92  # 92% combustion efficiency
       dq_comb_dt = dxb_dth * omega * q_total
 
-      # 4. Energy equation: m * cv * dT/dt = dQ - P * dV/dt + sum(m_dot * h) - u * dm/dt
-      u = self.cv * t
+      # 4. Woschni Convective Wall Heat Loss
+      if self.use_woschni:
+        r_comp = v_max / max(1.0e-6, v)
+        p_motored = p_inlet_pa * (r_comp**1.32)
+        ht = self.woschni.calculate_heat_transfer(
+            theta_deg=th_mod,
+            rpm=rpm,
+            p_pa=p,
+            t_gas_k=t,
+            p_motored_pa=p_motored,
+            t_ref_k=t_inlet_k,
+            p_ref_pa=p_inlet_pa,
+            v_ref_m3=v_max,
+        )
+        dq_wall_dt = ht.heat_flux_w
+      else:
+        dq_wall_dt = 0.0
+
+      # 5. Energy equation: m * cv * dT/dt = dQ_comb - dQ_wall - P * dV/dt + energy_flux
+      u = cv * t
       energy_flux = h_in_net + h_ex_net - u * dmdt
-      dtdt = (dq_comb_dt - p * dvdt + energy_flux) / (m * self.cv)
+      dtdt = (dq_comb_dt - dq_wall_dt - p * dvdt + energy_flux) / (m * cv)
 
       # Convert time derivatives to crank angle derivatives (1/omega)
       dmdth_deg = (dmdt / omega) * (np.pi / 180.0)
@@ -264,7 +307,6 @@ class FourStrokeSimulator:
 
     # Take the final 720 deg cycle
     th_final = sol.t[-720:] % 720.0
-    # Sort order to strictly 0..720 deg
     sort_idx = np.argsort(th_final)
     theta_deg = th_final[sort_idx]
     m_cycle = sol.y[0][-720:][sort_idx]
@@ -282,6 +324,30 @@ class FourStrokeSimulator:
         self.valves.lift(th, self.timing.evo_deg, self.timing.evc_deg, self.valves.exhaust_max_lift_m) * 1000.0
         for th in theta_deg
     ])
+
+    # Compute wall heat flux and convective coefficient traces
+    hc_cycle = np.zeros_like(theta_deg)
+    q_wall_cycle = np.zeros_like(theta_deg)
+    for i, th in enumerate(theta_deg):
+      r_comp = v_max / max(1.0e-6, v_cycle[i])
+      p_motored = p_inlet_pa * (r_comp**1.32)
+      ht = self.woschni.calculate_heat_transfer(
+          theta_deg=th,
+          rpm=rpm,
+          p_pa=p_cycle[i],
+          t_gas_k=t_cycle[i],
+          p_motored_pa=p_motored,
+          t_ref_k=t_inlet_k,
+          p_ref_pa=p_inlet_pa,
+          v_ref_m3=v_max,
+      )
+      hc_cycle[i] = ht.heat_transfer_coeff_w_m2_k
+      q_wall_cycle[i] = ht.heat_flux_w
+
+    # Integrate cumulative heat loss per cycle: Q_wall = integral(q_dot dt)
+    time_array = theta_deg * (np.pi / 180.0) / omega
+    q_wall_total = float(np.trapezoid(q_wall_cycle, time_array))
+    mean_cooling_power = q_wall_total * (rpm / 120.0)
 
     # Work integrations:
     # High-pressure loop (Power: 0..180, Compression: 540..720)
@@ -307,12 +373,31 @@ class FourStrokeSimulator:
     power_kw = (w_net * (rpm / 120.0)) / 1000.0
     torque_nm = w_net / (4.0 * np.pi)
 
+    m_fuel_cycle = trapped_mass / (1.0 + self.afr)
+    total_fuel_energy = m_fuel_cycle * self.q_fuel
+    heat_loss_fraction = q_wall_total / max(1.0, total_fuel_energy)
+
+    # Constant-volume chemical equilibrium at peak pressure
+    eq_species = {}
+    if self.cantera_chem:
+      try:
+        t_ivc = float(t_cycle[ivc_idx])
+        p_ivc = float(p_cycle[ivc_idx])
+        eq_res = self.cantera_chem.constant_volume_equilibrium(t_ivc, p_ivc)
+        eq_species = eq_res.major_species_mole_fractions
+      except Exception:
+        eq_species = {"CO2": 0.08, "H2O": 0.18, "CO": 0.02, "N2": 0.70}
+
+    peak_heat_flux = float(np.max(q_wall_cycle) / np.max(v_cycle)**(2/3)) / 1.0e6  # MW/m^2 approx
+
     return FourStrokeResults(
         theta_deg=theta_deg,
         pressure_pa=p_cycle,
         temperature_k=t_cycle,
         volume_m3=v_cycle,
         mass_kg=m_cycle,
+        heat_transfer_coeff_w_m2_k=hc_cycle,
+        wall_heat_flux_w=q_wall_cycle,
         intake_lift_mm=l_in_cycle,
         exhaust_lift_mm=l_ex_cycle,
         p_max_pa=float(np.max(p_cycle)),
@@ -327,4 +412,9 @@ class FourStrokeSimulator:
         volumetric_efficiency=float(eta_v),
         power_kw=float(power_kw),
         torque_nm=float(torque_nm),
+        q_wall_loss_j=q_wall_total,
+        mean_cooling_power_w=float(mean_cooling_power),
+        peak_heat_flux_mw_m2=peak_heat_flux,
+        heat_loss_fraction=float(heat_loss_fraction),
+        equilibrium_species=eq_species,
     )

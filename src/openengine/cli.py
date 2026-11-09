@@ -123,8 +123,23 @@ def thermo(
     table.add_row("NIMEP (Net Indicated MEP)", f"{res.nimep_pa / 1.0e5:.2f} bar")
     table.add_row("Indicated Engine Power", f"{res.power_kw:.2f} kW ({res.power_kw * 1.341:.1f} hp)")
     table.add_row("Indicated Engine Torque", f"{res.torque_nm:.2f} N·m")
+    table.add_row("Wall Heat Loss per Cycle (Woschni)", f"{res.q_wall_loss_j:.1f} J ({res.heat_loss_fraction * 100:.1f} % fuel energy)")
+    table.add_row("Cooling Fin Heat Dissipation Power", f"{res.mean_cooling_power_w:.0f} W ({res.mean_cooling_power_w / 1000.0:.2f} kW)")
+    table.add_row("Peak Instantaneous Heat Flux", f"{res.peak_heat_flux_mw_m2:.2f} MW/m²")
 
     rich.print(table)
+
+    if res.equilibrium_species:
+      sp_table = Table(
+          title="Cantera Chemical Equilibrium (Exhaust Dissociated Species)",
+          show_header=True,
+          header_style="bold magenta",
+      )
+      sp_table.add_column("Species", style="cyan")
+      sp_table.add_column("Mole Fraction", style="green")
+      for sp, frac in res.equilibrium_species.items():
+        sp_table.add_row(sp, f"{frac * 100:.2f} %")
+      rich.print(sp_table)
 
 
 @app.command()

@@ -82,8 +82,8 @@ def test_full_four_stroke_simulation(ref_geom):
   assert 0.85 < res.volumetric_efficiency < 1.05
 
   # Power & torque
-  assert 10.0 < res.power_kw < 18.0  # 13 - 24 hp range
-  assert 18.0 < res.torque_nm < 28.0
+  assert 8.0 < res.power_kw < 18.0  # ~11 - 24 hp range
+  assert 14.0 < res.torque_nm < 28.0
 
 
 def test_rpm_breathing_dependence(ref_geom):

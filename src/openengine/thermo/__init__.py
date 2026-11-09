@@ -1,5 +1,10 @@
 """Thermodynamic and combustion modeling."""
 
+from .cantera_kinetics import (
+    CanteraThermochemistry,
+    EquilibriumCombustionResult,
+    ThermodynamicState,
+)
 from .cycle import (
     ClosedCycleSimulator,
     CycleResults,
@@ -13,6 +18,7 @@ from .gas_exchange import (
     ValveTiming,
     compressible_orifice_flow,
 )
+from .woschni import HeatTransferOutputs, WoschniHeatTransfer
 
 __all__ = [
     "EngineGeometry",
@@ -24,4 +30,9 @@ __all__ = [
     "compressible_orifice_flow",
     "FourStrokeSimulator",
     "FourStrokeResults",
+    "WoschniHeatTransfer",
+    "HeatTransferOutputs",
+    "CanteraThermochemistry",
+    "ThermodynamicState",
+    "EquilibriumCombustionResult",
 ]
