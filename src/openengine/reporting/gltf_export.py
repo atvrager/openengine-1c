@@ -9,10 +9,12 @@ from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from build123d import export_gltf
+from build123d import Axis, BuildPart, Cylinder, Location, Part, export_gltf
 import numpy as np
+from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCP.TopLoc import TopLoc_Location
 
-from openengine.cad.assembly import generate_engine_assembly
+from openengine.cad.assembly import EngineAssembly, generate_engine_assembly
 from openengine.cad.connecting_rod import generate_connecting_rod
 from openengine.cad.crankshaft import generate_crankshaft
 from openengine.cad.cylinder_block import (
@@ -48,12 +50,22 @@ def turbo_colormap(val: float) -> Tuple[float, float, float]:
   return round(r, 3), round(g, 3), round(b, 3)
 
 
+def bake_shape(shape: Any) -> Part:
+  """Bake OpenCASCADE Location into vertex coordinates so exported glTF is strictly in assembly space."""
+  loc = shape.wrapped.Location()
+  if loc.IsIdentity():
+    return Part(shape.wrapped)
+  trsf = loc.Transformation()
+  transformer = BRepBuilderAPI_Transform(shape.wrapped.Located(TopLoc_Location()), trsf, True)
+  return Part(transformer.Shape())
+
+
 def export_cad_models_to_gltf(
     output_dir: Union[str, Path] = "outputs/reports/models",
     linear_deflection: float = 0.05,
     angular_deflection: float = 0.2,
 ) -> Dict[str, str]:
-  """Export all engine CAD B-Rep solid models into binary glTF (.glb) for Three.js.
+  """Export all engine CAD B-Rep solid models directly from the master assembly to binary glTF (.glb).
 
   Args:
     output_dir: Target directory for .glb files.
@@ -66,21 +78,52 @@ def export_cad_models_to_gltf(
   out_path = Path(output_dir)
   out_path.mkdir(parents=True, exist_ok=True)
 
+  assembly = EngineAssembly()
+  st0 = assembly.solve_kinematics(0.0)
+
+  # Generate CAD solids directly in their validated master assembly configuration at TDC
+  head = generate_cylinder_head()
+  block = generate_cylinder_block()
+  liner = generate_cylinder_liner()
+
+  crank_base = generate_crankshaft()
+  crank = crank_base.translate((0.0, 0.0, assembly.z_crank_main_mm))
+
+  rod_base = generate_connecting_rod()
+  rod_aligned = rod_base.rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0)
+  rod = rod_aligned.translate((0.0, 0.0, st0.wrist_pin_z_mm))
+
+  piston_base = generate_piston()
+  piston = piston_base.translate((0.0, 0.0, st0.wrist_pin_z_mm + 3.0))
+
+  with BuildPart() as wp:
+    Cylinder(radius=8.0, height=48.0, rotation=(90.0, 0.0, 0.0))
+  wrist_pin = wp.part.translate((0.0, 0.0, st0.wrist_pin_z_mm))
+
+  in_valve_base = generate_poppet_valve(head_diam_m=0.030)
+  ex_valve_base = generate_poppet_valve(head_diam_m=0.026)
+  in_valve = in_valve_base.rotate(Axis.Y, 15.0).translate((16.0, 0.0, 6.0))
+  ex_valve = ex_valve_base.rotate(Axis.Y, -15.0).translate((-16.0, 0.0, 6.0))
+
   parts_to_generate = {
-      "piston": lambda: generate_piston(),
-      "connecting_rod": lambda: generate_connecting_rod(),
-      "crankshaft": lambda: generate_crankshaft(),
-      "cylinder_block": lambda: generate_cylinder_block(),
-      "cylinder_head": lambda: generate_cylinder_head(),
-      "cylinder_liner": lambda: generate_cylinder_liner(),
-      "valve_intake": lambda: generate_poppet_valve(head_diam_m=0.029, stem_diam_m=0.0055, stem_length_m=0.082),
-      "valve_exhaust": lambda: generate_poppet_valve(head_diam_m=0.025, stem_diam_m=0.0055, stem_length_m=0.082),
+      "cylinder_head": lambda: bake_shape(head),
+      "cylinder_block": lambda: bake_shape(block),
+      "cylinder_liner": lambda: bake_shape(liner),
+      "crankshaft": lambda: bake_shape(crank),
+      "connecting_rod": lambda: bake_shape(rod),
+      "piston": lambda: bake_shape(piston),
+      "wrist_pin": lambda: bake_shape(wrist_pin),
+      "valve_intake": lambda: bake_shape(in_valve),
+      "valve_exhaust": lambda: bake_shape(ex_valve),
   }
 
   glb_paths: Dict[str, str] = {}
   for name, gen_fn in parts_to_generate.items():
     glb_file = out_path / f"{name}.glb"
     part = gen_fn()
+    # build123d.export_gltf internally multiplies location by Location((0, 0, 0), (1, 0, 0), -90)
+    # Counteract this so the exported glTF node has identity rotation and stays strictly in CAD assembly space (+Z up).
+    part.location = Location((0, 0, 0), (1, 0, 0), 90.0)
     export_gltf(
         part,
         str(glb_file),
@@ -90,9 +133,34 @@ def export_cad_models_to_gltf(
     )
     glb_paths[name] = str(glb_file)
 
+  # Export analytical kinematic trajectory computed from the master assembly engine
+  assembly = EngineAssembly()
+  trajectory: List[Dict[str, Any]] = []
+  for th in range(0, 720, 2):
+    st = assembly.solve_kinematics(float(th))
+    trajectory.append({
+        "crank_angle_deg": float(st.crank_angle_deg),
+        "crankpin_x_mm": round(float(st.crankpin_x_mm), 3),
+        "crankpin_z_mm": round(float(st.crankpin_z_mm), 3),
+        "con_rod_angle_deg": round(float(st.con_rod_angle_deg), 3),
+        "wrist_pin_z_mm": round(float(st.wrist_pin_z_mm), 3),
+        "piston_crown_z_mm": round(float(st.piston_crown_z_mm), 3),
+        "intake_valve_lift_mm": round(float(st.intake_valve_lift_mm), 3),
+        "exhaust_valve_lift_mm": round(float(st.exhaust_valve_lift_mm), 3),
+        "intake_pv_clearance_mm": round(float(st.intake_pv_clearance_mm), 3),
+        "exhaust_pv_clearance_mm": round(float(st.exhaust_pv_clearance_mm), 3),
+        "rod_to_liner_clearance_mm": round(float(st.rod_to_liner_clearance_mm), 3),
+        "is_safe": bool(st.is_safe),
+    })
+
+  traj_file = out_path / "kinematic_trajectory.json"
+  traj_file.write_text(json.dumps(trajectory, indent=2))
+  glb_paths["kinematic_trajectory"] = str(traj_file)
+
   # Master assembly
   assembly_glb = out_path / "engine_assembly.glb"
   asm = generate_engine_assembly()
+  asm.location = Location((0, 0, 0), (1, 0, 0), 90.0)
   export_gltf(
       asm,
       str(assembly_glb),

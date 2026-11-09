@@ -199,7 +199,7 @@ class EngineAssembly:
     # 3. Connecting Rod (aligned to Z, tilted by con_rod_angle_deg about Y, translated to wrist pin)
     rod_base = generate_connecting_rod()
     rod_aligned = rod_base.rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0)
-    rod = rod_aligned.rotate(Axis.Y, st.con_rod_angle_deg).translate((0.0, 0.0, st.wrist_pin_z_mm))
+    rod = rod_aligned.rotate(Axis.Y, -st.con_rod_angle_deg).translate((0.0, 0.0, st.wrist_pin_z_mm))
 
     # 4. Piston & Wrist Pin (translated to current wrist pin position)
     piston_base = generate_piston()

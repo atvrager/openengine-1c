@@ -1,6 +1,7 @@
 """OpenEngine-1C Command Line Interface."""
 
 from pathlib import Path
+import json
 import time
 from build123d import export_step
 import numpy as np
@@ -699,7 +700,9 @@ def fea_piston(
   table.add_row("Total Simulation Solve Time", f"{res.total_solve_time_s:.2f} s", "< 60.0 s", "[bold green]PASS[/bold green]")
 
   rich.print(table)
-  rich.print(f"[bold green]Saved piston FEA results to: {output_dir}/piston_fea_results.json[/bold green]")
+  p_json = Path(output_dir) / "piston_fea_results.json"
+  p_json.write_text(json.dumps(res.to_dict(), indent=2))
+  rich.print(f"[bold green]Saved piston FEA results to: {p_json}[/bold green]")
 
   if not res.is_structural_safe:
     rich.print(f"[bold red]FAILED: Piston structural FEA verification failed (LC-1 Yield SF = {res.lc1_mechanical.yield_safety_factor:.2f} < {cfg.min_yield_safety_factor:.2f})![/bold red]")
@@ -752,7 +755,9 @@ def fea_conrod(
   table.add_row("Total Simulation Solve Time", f"{res.total_solve_time_s:.2f} s", "< 60.0 s", "[bold green]PASS[/bold green]")
 
   rich.print(table)
-  rich.print(f"[bold green]Saved connecting rod FEA results to: {output_dir}/conrod_fea_results.json[/bold green]")
+  c_json = Path(output_dir) / "conrod_fea_results.json"
+  c_json.write_text(json.dumps(res.to_dict(), indent=2))
+  rich.print(f"[bold green]Saved connecting rod FEA results to: {c_json}[/bold green]")
 
   if not res.is_structural_safe:
     rich.print("[bold red]FAILED: Connecting rod structural FEA verification failed![/bold red]")
@@ -799,7 +804,9 @@ def fea_gasket(
   table.add_row("Bolt Yield Safety Factor", f"{res.bolt_yield_safety_factor:.2f}", f">= {cfg.min_bolt_safety_factor:.2f}", _status_badge(res.is_bolt_safe))
 
   rich.print(table)
-  rich.print(f"[bold green]Saved head gasket FEA results to: {output_dir}/head_gasket_fea_results.json[/bold green]")
+  g_json = Path(output_dir) / "head_gasket_fea_results.json"
+  g_json.write_text(json.dumps(res.to_dict(), indent=2))
+  rich.print(f"[bold green]Saved head gasket FEA results to: {g_json}[/bold green]")
 
   if not (res.is_sealing_safe and res.is_bolt_safe):
     rich.print("[bold red]FAILED: Cylinder head gasket sealing / bolt preload verification failed![/bold red]")
