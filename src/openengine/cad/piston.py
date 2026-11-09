@@ -18,7 +18,7 @@ def generate_piston(
     wrist_pin_diam_m: float = 0.016,
     compression_height_m: float = 0.024,
     total_height_m: float = 0.042,
-    crown_thickness_m: float = 0.0070,
+    crown_thickness_m: float = 0.0085,
     skirt_wall_thickness_m: float = 0.0025,
 ) -> Part:
   """Generate a parametric solid B-Rep piston using build123d."""

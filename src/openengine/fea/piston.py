@@ -336,7 +336,13 @@ def run_piston_fea(
   t0_total = time.time()
 
   # 1. Resolve or generate piston CAD STEP
-  step_file = Path(cad_step_path) if cad_step_path else out_dir / "piston.step"
+  if cad_step_path:
+    step_file = Path(cad_step_path)
+  elif Path("outputs/cad/piston.step").exists():
+    step_file = Path("outputs/cad/piston.step")
+  else:
+    step_file = out_dir / "piston.step"
+
   if not step_file.exists():
     from build123d import export_step
 

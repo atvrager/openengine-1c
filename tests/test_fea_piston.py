@@ -55,7 +55,7 @@ def test_piston_fea_solve(tmp_path: Path):
   # LC-1 Mechanical Validation
   assert res.lc1_mechanical.max_von_mises_mpa > 100.0
   assert res.lc1_mechanical.p95_von_mises_mpa < 250.0
-  assert res.lc1_mechanical.yield_safety_factor >= 1.50
+  assert res.lc1_mechanical.yield_safety_factor >= 1.60
   assert res.lc1_mechanical.max_displacement_mm < 0.50
 
   # LC-2 Thermo-Mechanical Validation
@@ -70,3 +70,20 @@ def test_piston_fea_solve(tmp_path: Path):
     data = json.load(f)
   assert data["is_structural_safe"] is True
   assert data["lc1_mechanical"]["yield_safety_factor"] == pytest.approx(res.lc1_mechanical.yield_safety_factor)
+
+
+def test_piston_acceptance_criteria(tmp_path: Path):
+  """Verify piston strictly satisfies Section 8 acceptance criteria (SF >= 1.60)."""
+  cfg = PistonFeaConfig(
+      peak_pressure_mpa=7.80,
+      mesh_size_min_mm=2.5,
+      mesh_size_max_mm=5.0,
+  )
+  out_dir = tmp_path / "fea_piston_strict"
+  res = run_piston_fea(
+      config=cfg,
+      output_dir=out_dir,
+      cad_step_path="outputs/cad/piston.step",
+  )
+  assert res.is_structural_safe is True
+  assert res.lc1_mechanical.yield_safety_factor >= 1.60
