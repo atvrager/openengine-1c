@@ -1,5 +1,6 @@
 """Container and system tool runner infrastructure."""
 
+import os
 import shutil
 import subprocess
 from typing import List, Optional
@@ -41,12 +42,17 @@ class PodmanRunner:
           "Podman/Docker runtime is not available on this system."
       )
 
+    abs_workspace = os.path.abspath(workspace_dir)
     cmd: List[str] = [
         self._podman_bin,
         "run",
         "--rm",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "-e",
+        "HOME=/tmp",
         "-v",
-        f"{workspace_dir}:/workspace:Z",
+        f"{abs_workspace}:/workspace:Z",
         "-w",
         "/workspace",
     ]
