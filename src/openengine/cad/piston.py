@@ -23,7 +23,7 @@ def generate_piston(
   h_total = total_height_m * 1000.0
   t_crown = crown_thickness_m * 1000.0
   d_pin = wrist_pin_diam_m * 1000.0
-  pin_y = (h_total - compression_height_m * 1000.0)
+  pin_z = (h_total / 2.0) - (compression_height_m * 1000.0)
 
   with BuildPart() as piston:
     # 1. Main outer cylindrical body
@@ -58,7 +58,7 @@ def generate_piston(
       )
 
     # 4. Cut wrist pin bore through skirt
-    with Locations((0, 0, -pin_y + (h_total / 2.0))):
+    with Locations((0, 0, pin_z)):
       Cylinder(
           radius=d_pin / 2.0,
           height=b_mm + 4.0,

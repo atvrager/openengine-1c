@@ -1,5 +1,12 @@
 """Parametric CAD solid modeling modules based on build123d and Open CASCADE."""
 
+from .assembly import (
+    ClearanceReport,
+    EngineAssembly,
+    EngineAssemblyState,
+    generate_engine_assembly,
+    verify_assembly_clearances,
+)
 from .connecting_rod import generate_connecting_rod
 from .crankshaft import (
     CrankshaftParams,
@@ -36,4 +43,9 @@ __all__ = [
     "generate_crankshaft",
     "calculate_crankshaft_balance",
     "CrankshaftParams",
+    "EngineAssembly",
+    "EngineAssemblyState",
+    "ClearanceReport",
+    "generate_engine_assembly",
+    "verify_assembly_clearances",
 ]

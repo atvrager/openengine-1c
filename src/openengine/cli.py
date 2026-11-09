@@ -13,8 +13,10 @@ from openengine.cad import (
     generate_cylinder_block,
     generate_cylinder_head,
     generate_cylinder_liner,
+    generate_engine_assembly,
     generate_piston,
     generate_poppet_valve,
+    verify_assembly_clearances,
 )
 from openengine.dynamics import (
     BearingGeometry,
@@ -390,6 +392,20 @@ def cad(
   crank_bal = calculate_crankshaft_balance()
   rich.print(
       f"[green]Saved crankshaft ({crank.volume/1000:.1f} cm³, {crank_bal['crankshaft_mass_kg']:.2f} kg, {crank_bal['balance_factor_percent']:.1f}% balance) to: {crank_file}[/green]"
+  )
+
+  rich.print("[cyan]Assembling Master Multi-Body Engine Assembly & Verifying 720° Clearances...[/cyan]")
+  clr = verify_assembly_clearances()
+  rich.print(f"  [cyan]Min Intake P-V Clearance:[/cyan] [bold green]{clr.min_intake_pv_clearance_mm:.2f} mm[/bold green] @ {clr.min_intake_pv_angle_deg:.0f}° CA (Target >= 1.5 mm)")
+  rich.print(f"  [cyan]Min Exhaust P-V Clearance:[/cyan] [bold green]{clr.min_exhaust_pv_clearance_mm:.2f} mm[/bold green] @ {clr.min_exhaust_pv_angle_deg:.0f}° CA (Target >= 1.5 mm)")
+  rich.print(f"  [cyan]Min Rod-to-Liner Clearance:[/cyan] [bold green]{clr.min_rod_to_liner_clearance_mm:.2f} mm[/bold green] @ {clr.min_rod_to_liner_angle_deg:.0f}° CA (Target >= 5.0 mm)")
+  rich.print(f"  [cyan]Kinematic Interference Check:[/cyan] [bold green]{'PASS (Clearance Verified)' if clr.is_clearance_safe else 'FAIL'}[/bold green]")
+
+  assembly = generate_engine_assembly(0.0)
+  assembly_file = out_path / "engine_assembly.step"
+  export_step(assembly, assembly_file)
+  rich.print(
+      f"[green]Saved master engine assembly ({assembly.volume/1000:.1f} cm³, {len(assembly.solids())} parts) to: {assembly_file}[/green]"
   )
 
 
