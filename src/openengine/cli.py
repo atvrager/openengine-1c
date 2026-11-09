@@ -861,19 +861,17 @@ def run_all(
 
   # Phase 1: 0D Thermo & Valvetrain Dynamics
   rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics & Valvetrain Dynamics...[/bold yellow]")
-  thermo_cycle()
-  cam_profile()
-  slider_crank()
-  flywheel()
-  bearing()
+  thermo(config_path="config/engine_specs.yaml")
+  valvetrain(config_path="config/engine_specs.yaml")
+  dynamics(config_path="config/engine_specs.yaml")
 
   # Phase 2: Parametric B-Rep CAD
   rich.print("\n[bold yellow]>>> Step 2: Parametric Solid CAD Generation (STEP)...[/bold yellow]")
-  cad_all(output_dir=f"{output_dir}/cad")
+  cad(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/cad")
 
   # Phase 3: CFD, Combustion, CHT, and Closed-Loop Calibration
   rich.print("\n[bold yellow]>>> Step 3: CFD & Moving-Mesh Combustion...[/bold yellow]")
-  cfd_port_bench(output_dir=f"{output_dir}/cfd")
+  cfd_port_flow(output_dir=f"{output_dir}/cfd")
   cfd_combustion(output_dir=f"{output_dir}/cfd")
   cfd_cht_cooling(output_dir=f"{output_dir}/cfd")
   cfd_closed_loop(output_dir=f"{output_dir}/calibration")
