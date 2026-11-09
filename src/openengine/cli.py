@@ -18,6 +18,12 @@ from openengine.cad import (
     generate_poppet_valve,
     verify_assembly_clearances,
 )
+from openengine.cfd import (
+    CombustionConfig,
+    PortFlowConfig,
+    run_combustion_simulation,
+    run_port_flow_sweep,
+)
 from openengine.dynamics import (
     BearingGeometry,
     FlywheelDimensions,
@@ -451,6 +457,96 @@ def check_solvers():
     table.add_row(bin_name, desc, status)
 
   rich.print(table)
+
+
+@app.command(name="cfd-port-flow")
+def cfd_port_flow(
+    lifts: str = "2.0,5.0,8.5",
+    output_dir: str = "outputs/cfd",
+    max_iterations: int = 100,
+):
+  """Run steady intake port aerodynamic flow bench sweep via OpenFOAM simpleFoam."""
+  lift_list = [float(x.strip()) for x in lifts.split(",") if x.strip()]
+  rich.print(f"[cyan]Running OpenFOAM intake port flow bench for valve lifts: {lift_list} mm...[/cyan]")
+
+  cfg = PortFlowConfig(max_iterations=max_iterations)
+  out_path = Path(output_dir)
+  res = run_port_flow_sweep(lifts_mm=lift_list, output_dir=out_path, config=cfg)
+
+  table = Table(
+      title=f"Intake Port Flow Bench Results (OpenFOAM simpleFoam, ΔP = {cfg.delta_p_pa:.0f} Pa)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Lift [mm]", style="magenta")
+  table.add_column("Mass Flow [g/s]", style="green")
+  table.add_column("Cd (Seat)", style="yellow")
+  table.add_column("Cd (Curtain)", style="yellow")
+  table.add_column("Tumble Ratio", style="cyan")
+  table.add_column("Swirl Ratio", style="cyan")
+  table.add_column("Time [s]", style="white")
+
+  for pt in res.points:
+    table.add_row(
+        f"{pt.lift_mm:.1f}",
+        f"{pt.mass_flow_kg_s * 1000.0:.2f}",
+        f"{pt.cd_seat:.3f}",
+        f"{pt.cd_curtain:.3f}",
+        f"{pt.tumble_ratio:+.3f}",
+        f"{pt.swirl_ratio:+.3f}",
+        f"{pt.solve_time_s:.1f}",
+    )
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved flow bench summary to: {out_path / 'port_flow_results.json'} ({res.total_solve_time_s:.1f} s total)[/bold green]")
+
+
+@app.command(name="cfd-combustion")
+def cfd_combustion(
+    start_ca: float = -180.0,
+    end_ca: float = 5.0,
+    spark_ca: float = -22.0,
+    output_dir: str = "outputs/cfd",
+):
+  """Run 3D moving-mesh in-cylinder combustion simulation via OpenFOAM XiEngineFoam."""
+  rich.print(f"[cyan]Running 3D moving-mesh combustion simulation ({start_ca:.0f}° to {end_ca:.0f}° CA, spark at {spark_ca:.0f}° CA)...[/cyan]")
+
+  cfg = CombustionConfig(
+      start_crank_angle_deg=start_ca,
+      end_crank_angle_deg=end_ca,
+      spark_crank_angle_deg=spark_ca,
+  )
+  out_path = Path(output_dir)
+  case_dir = out_path / "case_combustion"
+  res = run_combustion_simulation(config=cfg, case_dir=case_dir)
+
+  json_file = out_path / "combustion_results.json"
+  res.to_json(json_file)
+
+  table = Table(
+      title="3D Moving-Mesh In-Cylinder Combustion Results (OpenFOAM XiEngineFoam)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Metric", style="magenta")
+  table.add_column("Value", style="bold green")
+
+  table.add_row("Mesh Cells", f"{res.total_cells:,} tets")
+  table.add_row("Solved Crank Angle Range", f"{res.points[0].crank_angle_deg:.1f}° to {res.points[-1].crank_angle_deg:.1f}° CA ({len(res.points)} steps)")
+  table.add_row("Peak In-Cylinder Pressure", f"{res.p_max_pa / 1e5:.2f} bar ({res.p_max_pa / 1e6:.3f} MPa) @ {res.theta_p_max_deg:.2f}° CA")
+  table.add_row("Peak In-Cylinder Temperature", f"{res.t_max_k:.1f} K @ {res.theta_t_max_deg:.2f}° CA")
+  table.add_row("Combustion Progress at End", f"{res.burn_progress_at_end * 100.0:.2f}% mass fraction burned")
+  table.add_row("Total Simulation Solve Time", f"{res.solve_time_s:.2f} s")
+
+  if res.wiebe:
+    w = res.wiebe
+    table.add_row("Calibrated Wiebe Parameter a", f"{w.a:.3f}")
+    table.add_row("Calibrated Wiebe Form Factor m", f"{w.m:.3f}")
+    table.add_row("Calibrated Combustion Duration", f"{w.duration_deg:.1f}° CA (from {w.theta_soc_deg:.0f}° CA)")
+    table.add_row("Wiebe Curve Fit Quality (R²)", f"{w.r_squared:.4f}")
+
+  rich.print(table)
+  rich.print(f"[bold green]Saved combustion results to: {json_file}[/bold green]")
 
 
 if __name__ == "__main__":

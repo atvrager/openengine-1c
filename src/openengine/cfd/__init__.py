@@ -1,5 +1,16 @@
 """Computational Fluid Dynamics (CFD) simulation suite."""
 
+from openengine.cfd.combustion import (
+    CombustionConfig,
+    CombustionResult,
+    CombustionStepPoint,
+    WiebeFitResult,
+    calibrate_wiebe_from_trajectory,
+    compute_clearance_height,
+    generate_combustion_mesh,
+    run_combustion_simulation,
+    setup_combustion_case,
+)
 from openengine.cfd.port_bench import (
     LiftPointResult,
     PortFlowConfig,
@@ -11,6 +22,15 @@ from openengine.cfd.port_bench import (
 )
 
 __all__ = [
+    "CombustionConfig",
+    "CombustionResult",
+    "CombustionStepPoint",
+    "WiebeFitResult",
+    "calibrate_wiebe_from_trajectory",
+    "compute_clearance_height",
+    "generate_combustion_mesh",
+    "run_combustion_simulation",
+    "setup_combustion_case",
     "LiftPointResult",
     "PortFlowConfig",
     "PortFlowSweepResult",

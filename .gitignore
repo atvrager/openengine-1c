@@ -19,6 +19,8 @@ outputs/
 # OpenFOAM generated mesh and time directories
 cases/**/constant/polyMesh/
 cases/**/[0-9]*/
+!cases/**/0/
+!cases/**/0/**
 cases/**/[0-9]*.[0-9]*/
 cases/**/log.*
 
