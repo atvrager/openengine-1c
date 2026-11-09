@@ -175,14 +175,46 @@ def cad(
 
 @app.command()
 def check_solvers():
-  """Check availability of containerized Podman solvers."""
+  """Check availability of containerized Podman solvers (OpenFOAM, CalculiX, Gmsh)."""
   runner = PodmanRunner()
-  if runner.is_available:
-    rich.print("[green]Podman/Docker runtime is available and responding.[/green]")
-  else:
+  if not runner.is_available:
     rich.print(
-        "[yellow]Podman/Docker runtime is not responding or not in PATH.[/yellow]"
+        "[bold red]Error:[/bold red] Podman/Docker runtime is not responding or not in PATH."
     )
+    raise typer.Exit(code=1)
+
+  rich.print("[bold green]Podman runtime detected.[/bold green] Verifying containerized solver binaries...")
+  import os
+  solvers = [
+      ("simpleFoam", "OpenFOAM v2406 Steady Flow Bench"),
+      ("XiEngineFoam", "OpenFOAM v2406 Premixed Dynamic-Mesh Combustion"),
+      ("engineFoam", "OpenFOAM v2406 Moving-Mesh Engine Solver"),
+      ("blockMesh", "OpenFOAM v2406 Mesh Generator"),
+      ("ccx", "CalculiX v2.21 Implicit FEA Solver"),
+      ("gmsh", "Gmsh v4.12 3D Finite Element Mesh Generator"),
+  ]
+
+  table = Table(
+      title="Containerized Solver Status (openengine-solvers:latest)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Solver Binary", style="magenta")
+  table.add_column("Description", style="white")
+  table.add_column("Status", style="bold green")
+
+  bin_names = [s[0] for s in solvers]
+  try:
+    res = runner.run_command(f"which {' '.join(bin_names)}", os.getcwd(), timeout_sec=10)
+    found_bins = set(line.split("/")[-1].strip() for line in res.stdout.splitlines())
+  except Exception:
+    found_bins = set()
+
+  for bin_name, desc in solvers:
+    status = "[green]✓ Ready[/green]" if bin_name in found_bins else "[red]✗ Not found[/red]"
+    table.add_row(bin_name, desc, status)
+
+  rich.print(table)
 
 
 if __name__ == "__main__":

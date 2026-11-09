@@ -10,15 +10,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     calculix-ccx \
     gmsh \
     libgomp1 \
-    libglu1-mesa \
-    libgl1-mesa-glx \
     curl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Ensure OpenFOAM environment is sourced in all non-login and login shells
+RUN echo "source /usr/lib/openfoam/openfoam2406/etc/bashrc" >> /etc/bash.bashrc
+
 # Set up working directory
 WORKDIR /workspace
 
-# Default entrypoint activates OpenFOAM environment
 ENTRYPOINT ["/bin/bash", "-c"]
-CMD ["echo 'OpenEngine Solvers Ready (OpenFOAM 2406, CalculiX, Gmsh)'"]
+CMD ["echo 'OpenEngine Solvers Ready (OpenFOAM 2406, CalculiX ccx, Gmsh)'"]

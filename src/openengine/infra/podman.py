@@ -56,7 +56,7 @@ class PodmanRunner:
         cmd.extend(["-e", f"{k}={v}"])
 
     cmd.append(self.image)
-    cmd.append(f"/bin/bash -c '{command}'")
+    cmd.append(f"source /usr/lib/openfoam/openfoam2406/etc/bashrc 2>/dev/null; {command}")
 
     return subprocess.run(
         cmd,

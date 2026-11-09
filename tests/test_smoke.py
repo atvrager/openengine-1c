@@ -1,5 +1,7 @@
 """Smoke tests for OpenEngine-1C core modules."""
 
+import os
+import tempfile
 import numpy as np
 from openengine.cad.connecting_rod import generate_connecting_rod
 from openengine.cad.piston import generate_piston
@@ -109,3 +111,95 @@ def test_cad_piston_generation():
   # Diameter should be ~68 mm
   assert np.isclose(bbox.size.X, 68.0, atol=1.0)
   assert np.isclose(bbox.size.Y, 68.0, atol=1.0)
+
+
+def test_container_openfoam_solvers():
+  runner = PodmanRunner()
+  if not runner.is_available:
+    pytest.skip("Podman/Docker is not available")
+
+  for solver in ["simpleFoam", "XiEngineFoam", "engineFoam", "blockMesh"]:
+    res = runner.run_command(f"{solver} -help", os.getcwd())
+    assert res.returncode == 0
+    assert len(res.stdout) > 100
+
+
+def test_container_calculix_solve():
+  runner = PodmanRunner()
+  if not runner.is_available:
+    pytest.skip("Podman/Docker is not available")
+
+  inp_content = """*HEADING
+Single element cube under tension
+*NODE
+1, 0., 0., 0.
+2, 1., 0., 0.
+3, 1., 1., 0.
+4, 0., 1., 0.
+5, 0., 0., 1.
+6, 1., 0., 1.
+7, 1., 1., 1.
+8, 0., 1., 1.
+*ELEMENT, TYPE=C3D8, ELSET=Eall
+1, 1, 2, 3, 4, 5, 6, 7, 8
+*MATERIAL, NAME=STEEL
+*ELASTIC
+210000., 0.3
+*SOLID SECTION, ELSET=Eall, MATERIAL=STEEL
+*BOUNDARY
+1, 1, 3
+2, 2, 3
+4, 1
+*STEP
+*STATIC
+*CLOAD
+5, 3, 100.
+6, 3, 100.
+7, 3, 100.
+8, 3, 100.
+*NODE FILE
+U
+*EL FILE
+S
+*END STEP
+"""
+  with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
+    rel_tmp = os.path.relpath(tmpdir, os.getcwd())
+    inp_path = os.path.join(tmpdir, "cube.inp")
+    with open(inp_path, "w") as f:
+      f.write(inp_content)
+
+    res = runner.run_command(f"cd {rel_tmp} && ccx cube", os.getcwd())
+    assert res.returncode == 0
+    frd_file = os.path.join(tmpdir, "cube.frd")
+    assert os.path.exists(frd_file)
+    assert os.path.getsize(frd_file) > 1000
+
+
+def test_container_gmsh_mesh():
+  runner = PodmanRunner()
+  if not runner.is_available:
+    pytest.skip("Podman/Docker is not available")
+
+  geo_content = """Point(1) = {0, 0, 0, 1.0};
+Point(2) = {1, 0, 0, 1.0};
+Point(3) = {1, 1, 0, 1.0};
+Point(4) = {0, 1, 0, 1.0};
+Line(1) = {1, 2};
+Line(2) = {2, 3};
+Line(3) = {3, 4};
+Line(4) = {4, 1};
+Curve Loop(1) = {1, 2, 3, 4};
+Plane Surface(1) = {1};
+"""
+  with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
+    rel_tmp = os.path.relpath(tmpdir, os.getcwd())
+    geo_path = os.path.join(tmpdir, "box.geo")
+    with open(geo_path, "w") as f:
+      f.write(geo_content)
+
+    res = runner.run_command(f"cd {rel_tmp} && gmsh box.geo -2 -o box.msh", os.getcwd())
+    assert res.returncode == 0
+    msh_file = os.path.join(tmpdir, "box.msh")
+    assert os.path.exists(msh_file)
+    assert os.path.getsize(msh_file) > 200
