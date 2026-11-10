@@ -1,0 +1,107 @@
+name: Build, Test, and Deploy Dashboard
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  build-test-export:
+    name: Build, Test & Export Artifacts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.11
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+
+      - name: Install system OpenGL and X11 runtime libraries for OCCT and Gmsh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 \
+            libglu1-mesa \
+            libxrender1 \
+            libxcursor1 \
+            libxft2 \
+            libxinerama1
+
+      - name: Sync Python dependencies
+        run: uv sync --frozen
+
+      - name: Build solver container image
+        run: |
+          if command -v podman >/dev/null 2>&1; then
+            podman build -t openengine-solvers:latest -f Containerfile .
+          else
+            docker build -t openengine-solvers:latest -f Containerfile .
+          fi
+
+      - name: Verify containerized solvers
+        run: uv run openengine check-solvers
+
+      - name: Run full multi-physics pipeline and generate artifacts
+        run: uv run openengine run-all --quick --output-dir outputs
+
+      - name: Run pytest verification suite
+        run: uv run pytest -v
+
+      - name: Upload engineering artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openengine-1c-artifacts
+          path: |
+            outputs/cad/*.step
+            outputs/cfd/*.json
+            outputs/calibration/*.json
+            outputs/fea/**/*.json
+            outputs/fea/**/*.inp
+            outputs/fea/**/*.frd
+            outputs/reports/engineering_dashboard.html
+            outputs/reports/summary.md
+            outputs/reports/models/*
+          if-no-files-found: error
+
+      - name: Prepare GitHub Pages site
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p _site
+          cp outputs/reports/engineering_dashboard.html _site/index.html
+          cp outputs/reports/engineering_dashboard.html _site/engineering_dashboard.html
+          cp outputs/reports/summary.md _site/summary.md
+          cp -r outputs/reports/models _site/models
+          cp -r outputs/cad _site/cad
+
+      - name: Upload GitHub Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy-pages:
+    name: Deploy Dashboard to GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build-test-export
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
