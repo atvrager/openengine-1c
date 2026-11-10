@@ -103,20 +103,34 @@ class ConrodFeaSummaryResult:
 
 
 def generate_conrod_mesh(
-    cad_step_path: Union[str, Path],
-    output_inp_path: Union[str, Path],
+    cad_step_path: Optional[Union[str, Path, Any]] = None,
+    output_inp_path: Union[str, Path] = "outputs/fea/conrod/conrod_mesh.inp",
     mesh_size_min: float = 3.0,
     mesh_size_max: float = 6.0,
     l_center_to_center_mm: float = 108.0,
 ) -> StructuralMeshResult:
   """Mesh the connecting rod STEP geometry and tag bearing surface node sets."""
+  if cad_step_path is None:
+    geom: Any = generate_connecting_rod(center_to_center_m=l_center_to_center_mm / 1000.0)
+  elif isinstance(cad_step_path, (str, Path)):
+    step_p = Path(cad_step_path)
+    if not step_p.exists():
+      from build123d import export_step
+
+      step_p.parent.mkdir(parents=True, exist_ok=True)
+      rod_part = generate_connecting_rod(center_to_center_m=l_center_to_center_mm / 1000.0)
+      export_step(rod_part, str(step_p))
+    geom = step_p
+  else:
+    geom = cad_step_path
+
   # Small pin bore: cylindrical surface at origin (y ~ 0, z ~ 0)
   small_filter = SurfaceFilter("NSMALL_PIN", lambda com, bbox: abs(com[1]) < 5.0 and abs(com[2]) < 5.0)
   # Big crank bore: cylindrical surface at y = l_mm (y ~ 108, z ~ 0)
   big_filter = SurfaceFilter("NBIG_CRANK", lambda com, bbox: abs(com[1] - l_center_to_center_mm) < 5.0 and abs(com[2]) < 5.0)
 
   return mesh_structural_part_c3d10(
-      geometry=cad_step_path,
+      geometry=geom,
       output_inp_path=output_inp_path,
       mesh_size_min=mesh_size_min,
       mesh_size_max=mesh_size_max,
@@ -252,6 +266,7 @@ def run_conrod_fea(
   if not step_file.exists():
     from build123d import export_step
 
+    step_file.parent.mkdir(parents=True, exist_ok=True)
     rod_part = generate_connecting_rod(center_to_center_m=cfg.center_to_center_m)
     export_step(rod_part, str(step_file))
 

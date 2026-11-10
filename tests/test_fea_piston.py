@@ -14,7 +14,7 @@ from openengine.fea.piston import (
 
 def test_piston_meshing_and_surfaces(tmp_path: Path):
   """Verify Gmsh quadratic C3D10 meshing and node set identification on piston."""
-  cad_step = Path("outputs/cad/piston.step")
+  cad_step = tmp_path / "piston.step"
   mesh_inp = tmp_path / "piston_test_mesh.inp"
 
   res = generate_piston_mesh(
@@ -46,7 +46,7 @@ def test_piston_fea_solve(tmp_path: Path):
   res = run_piston_fea(
       config=cfg,
       output_dir=out_dir,
-      cad_step_path="outputs/cad/piston.step",
+      cad_step_path=out_dir / "piston.step",
   )
 
   assert isinstance(res, PistonFeaSummaryResult)
@@ -83,7 +83,7 @@ def test_piston_acceptance_criteria(tmp_path: Path):
   res = run_piston_fea(
       config=cfg,
       output_dir=out_dir,
-      cad_step_path="outputs/cad/piston.step",
+      cad_step_path=out_dir / "piston.step",
   )
   assert res.is_structural_safe is True
   assert res.lc1_mechanical.yield_safety_factor >= 1.60

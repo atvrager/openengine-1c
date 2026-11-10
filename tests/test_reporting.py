@@ -34,6 +34,16 @@ def test_fea_stress_webgl_export(tmp_path: Path):
   """Verify tetrahedral boundary surface extraction and vertex color mapping."""
   frd_path = Path("outputs/fea/piston/piston_lc1.frd")
   inp_path = Path("outputs/fea/piston/piston_mesh.inp")
+  if not frd_path.exists() or not inp_path.exists():
+    from openengine.fea.piston import PistonFeaConfig, run_piston_fea
+
+    fea_dir = tmp_path / "piston_fea"
+    run_piston_fea(
+        config=PistonFeaConfig(mesh_size_min_mm=3.5, mesh_size_max_mm=7.0),
+        output_dir=fea_dir,
+    )
+    frd_path = fea_dir / "piston_lc1.frd"
+    inp_path = fea_dir / "piston_mesh.inp"
 
   out_json = tmp_path / "test_stress.json"
   meta = export_fea_stress_to_webgl(

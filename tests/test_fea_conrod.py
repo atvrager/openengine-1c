@@ -15,7 +15,7 @@ from openengine.fea.connecting_rod import (
 
 def test_conrod_meshing_and_surfaces(tmp_path: Path):
   """Verify Gmsh quadratic C3D10 meshing and node set identification on connecting rod."""
-  cad_step = Path("outputs/cad/connecting_rod.step")
+  cad_step = tmp_path / "connecting_rod.step"
   mesh_inp = tmp_path / "conrod_test_mesh.inp"
 
   res = generate_conrod_mesh(
@@ -56,7 +56,7 @@ def test_conrod_fea_solve(tmp_path: Path):
   res = run_conrod_fea(
       config=cfg,
       output_dir=out_dir,
-      cad_step_path="outputs/cad/connecting_rod.step",
+      cad_step_path=out_dir / "connecting_rod.step",
   )
 
   assert isinstance(res, ConrodFeaSummaryResult)

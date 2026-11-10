@@ -98,12 +98,26 @@ class PistonFeaSummaryResult:
 
 
 def generate_piston_mesh(
-    cad_step_path: Union[str, Path],
-    output_inp_path: Union[str, Path],
+    cad_step_path: Optional[Union[str, Path, Any]] = None,
+    output_inp_path: Union[str, Path] = "outputs/fea/piston/piston_mesh.inp",
     mesh_size_min: float = 2.5,
     mesh_size_max: float = 5.0,
 ) -> StructuralMeshResult:
   """Mesh the piston STEP geometry and tag boundary node sets."""
+  if cad_step_path is None:
+    geom: Any = generate_piston()
+  elif isinstance(cad_step_path, (str, Path)):
+    step_p = Path(cad_step_path)
+    if not step_p.exists():
+      from build123d import export_step
+
+      step_p.parent.mkdir(parents=True, exist_ok=True)
+      piston_part = generate_piston()
+      export_step(piston_part, str(step_p))
+    geom = step_p
+  else:
+    geom = cad_step_path
+
   # Crown face: top surface at z > 20 mm
   crown_filter = SurfaceFilter("NCROWN", lambda com, bbox: com[2] > 20.0)
   # Pin bore: cylindrical contact area at z ~ -3 mm
@@ -112,7 +126,7 @@ def generate_piston_mesh(
   skirt_filter = SurfaceFilter("NSKIRT", lambda com, bbox: com[2] < 10.0 and math.sqrt(com[0]**2 + com[1]**2) > 30.0)
 
   return mesh_structural_part_c3d10(
-      geometry=cad_step_path,
+      geometry=geom,
       output_inp_path=output_inp_path,
       mesh_size_min=mesh_size_min,
       mesh_size_max=mesh_size_max,
@@ -346,6 +360,7 @@ def run_piston_fea(
   if not step_file.exists():
     from build123d import export_step
 
+    step_file.parent.mkdir(parents=True, exist_ok=True)
     piston_part = generate_piston(bore_m=cfg.bore_m)
     export_step(piston_part, str(step_file))
 

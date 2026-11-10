@@ -47,8 +47,6 @@ class PodmanRunner:
         self._podman_bin,
         "run",
         "--rm",
-        "--user",
-        f"{os.getuid()}:{os.getgid()}",
         "-e",
         "HOME=/tmp",
         "-v",
@@ -56,6 +54,8 @@ class PodmanRunner:
         "-w",
         "/workspace",
     ]
+    if os.path.basename(self._podman_bin) != "podman":
+      cmd[3:3] = ["--user", f"{os.getuid()}:{os.getgid()}"]
 
     if env_vars:
       for k, v in env_vars.items():
