@@ -3,6 +3,7 @@
 from .cantera_kinetics import (
     CanteraThermochemistry,
     EquilibriumCombustionResult,
+    FuelBlendSpec,
     ThermodynamicState,
 )
 from .cycle import (
@@ -17,6 +18,16 @@ from .gas_exchange import (
     ValveGeometry,
     ValveTiming,
     compressible_orifice_flow,
+)
+from .knock import (
+    KnockEvaluationResult,
+    KnockSafeOperatingMap,
+    KnockSweepPoint,
+    compute_adiabatic_end_gas_temperature,
+    douaud_eyzat_ignition_delay_s,
+    evaluate_cycle_knock,
+    select_best_knock_safe_map,
+    soc_from_spark_advance,
 )
 from .woschni import HeatTransferOutputs, WoschniHeatTransfer
 
@@ -33,6 +44,15 @@ __all__ = [
     "WoschniHeatTransfer",
     "HeatTransferOutputs",
     "CanteraThermochemistry",
+    "FuelBlendSpec",
     "ThermodynamicState",
     "EquilibriumCombustionResult",
+    "KnockEvaluationResult",
+    "KnockSweepPoint",
+    "KnockSafeOperatingMap",
+    "douaud_eyzat_ignition_delay_s",
+    "compute_adiabatic_end_gas_temperature",
+    "evaluate_cycle_knock",
+    "select_best_knock_safe_map",
+    "soc_from_spark_advance",
 ]

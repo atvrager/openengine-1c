@@ -50,11 +50,11 @@ def test_woschni_heat_transfer_scaling(ref_geom):
 def test_cantera_thermochemistry():
   chem = CanteraThermochemistry()
 
-  # Test unburned mixture properties at room temperature
+  # Test unburned mixture properties at room temperature (E10 PRF+air MW ~ 30.2 g/mol)
   chem.set_unburned_mixture(t_k=300.0, p_pa=101325.0, equivalence_ratio=1.0)
   state = chem.current_state()
   assert 1.35 < state.gamma < 1.42
-  assert 25.0 < state.mean_molecular_weight < 30.0
+  assert 25.0 < state.mean_molecular_weight < 31.0
   assert 1000.0 < state.cp_j_kg_k < 1200.0
 
   # Test compressed mixture: gamma should drop due to vibrational activation

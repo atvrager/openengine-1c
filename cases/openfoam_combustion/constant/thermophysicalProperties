@@ -25,21 +25,21 @@ thermoType
     energy          absoluteEnthalpy;
 }
 
-stoichiometricAirFuelMassRatio stoichiometricAirFuelMassRatio [0 0 0 0 0 0 0] 15.0336;
+stoichiometricAirFuelMassRatio stoichiometricAirFuelMassRatio [0 0 0 0 0 0 0] 14.1;
 
 fuel
 {
     specie
     {
-        molWeight       114.23;
+        molWeight       96.2959;
     }
     thermodynamics
     {
-        Tlow            298.15;
-        Thigh           5000;
+        Tlow            200;
+        Thigh           6000;
         Tcommon         1000;
-        highCpCoeffs    ( 19.3963 0.0488137 -1.55798e-05 2.17831e-09 -1.08391e-13 -37133.9 -78.8531 );
-        lowCpCoeffs     ( 0.429357 0.0765769 8.41306e-06 -5.86603e-08 2.79414e-11 -30446.4 25.6735 );
+        highCpCoeffs    ( 14.1111 0.0437002 -1.54291e-05 2.46663e-09 -1.46788e-13 -34324.6 -48.6393 );
+        lowCpCoeffs     ( 3.15473 0.0440256 5.38566e-05 -9.81031e-08 4.17682e-11 -29866.8 15.1206 );
     }
     transport
     {
