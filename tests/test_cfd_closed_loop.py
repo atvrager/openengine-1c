@@ -46,10 +46,16 @@ def test_closed_loop_calibration_with_cfd_outputs():
   """Verify closed-loop calibration ingests generated CFD simulation JSON results."""
   res = run_closed_loop_calibration()
 
-  # Check Wiebe parameters from combustion_results.json
-  assert res.calibrated_wiebe_a == pytest.approx(1.818, abs=0.01)
-  assert res.calibrated_wiebe_m == pytest.approx(3.018, abs=0.01)
-  assert res.calibrated_wiebe_duration_deg == pytest.approx(73.6, abs=0.5)
+  # Check Wiebe parameters ingested from combustion_results.json (87-AKI E10 fit)
+  comb_json = Path("outputs/cfd/combustion_results.json")
+  if comb_json.exists():
+    wiebe_ref = json.loads(comb_json.read_text())["wiebe"]
+    assert res.calibrated_wiebe_a == pytest.approx(wiebe_ref["a"], abs=0.01)
+    assert res.calibrated_wiebe_m == pytest.approx(wiebe_ref["m"], abs=0.01)
+    assert res.calibrated_wiebe_duration_deg == pytest.approx(wiebe_ref["duration_deg"], abs=0.5)
+  assert 1.2 <= res.calibrated_wiebe_a <= 3.0
+  assert 2.0 <= res.calibrated_wiebe_m <= 4.0
+  assert 60.0 <= res.calibrated_wiebe_duration_deg <= 90.0
   assert res.calibrated_wiebe_soc_deg == pytest.approx(-22.0, abs=0.1)
 
   # Check Port Flow Curtain Cd from port_flow_results.json

@@ -4,6 +4,19 @@ from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple, TypedDict
 import cantera as ct
 import numpy as np
+from openengine.cad.cylinder_head import (
+    DEFAULT_VALVE_HEAD_EX_M,
+    DEFAULT_VALVE_HEAD_IN_M,
+    DEFAULT_VALVE_SEAT_ANGLE_DEG,
+)
+from openengine.lubrication.friction import evaluate_engine_friction
+from openengine.lubrication.rheology import (
+    SAE_10W40_NAME,
+    LubricationConfigSection,
+    OilGradeSpec,
+)
+from openengine.lubrication.splash import SplashSystemParams
+from openengine.lubrication.thermal import SumpThermalParams, solve_sump_thermal_balance
 from openengine.thermo.cantera_kinetics import (
     E10_LHV_J_KG,
     E10_STOICH_AFR,
@@ -34,11 +47,11 @@ DEFAULT_EVC_DEG: float = 375.0
 DEFAULT_IVO_DEG: float = 345.0
 DEFAULT_IVC_DEG: float = 585.0
 
-DEFAULT_INTAKE_DIAM_M: float = 0.030
-DEFAULT_EXHAUST_DIAM_M: float = 0.026
+DEFAULT_INTAKE_DIAM_M: float = DEFAULT_VALVE_HEAD_IN_M
+DEFAULT_EXHAUST_DIAM_M: float = DEFAULT_VALVE_HEAD_EX_M
 DEFAULT_INTAKE_LIFT_M: float = 0.0085
 DEFAULT_EXHAUST_LIFT_M: float = 0.0080
-DEFAULT_SEAT_ANGLE_DEG: float = 45.0
+DEFAULT_SEAT_ANGLE_DEG: float = DEFAULT_VALVE_SEAT_ANGLE_DEG
 DEFAULT_INTAKE_CD: float = 0.65
 DEFAULT_EXHAUST_CD: float = 0.62
 
@@ -65,10 +78,14 @@ DEG_TO_RAD: float = float(np.pi) / 180.0
 TWO_PI: float = 2.0 * float(np.pi)
 FOUR_PI: float = 4.0 * float(np.pi)
 SECONDS_PER_MINUTE: float = 60.0
+SECONDS_PER_HOUR: float = 3600.0
 CYCLES_PER_TWO_REV_DIVISOR: float = 120.0
 WATT_TO_KW: float = 1000.0
+KG_TO_G: float = 1000.0
 METER_TO_MM: float = 1000.0
 WATT_TO_MW: float = 1.0e6
+MIN_BRAKE_POWER_KW: float = 1.0e-6
+DEFAULT_OIL_TEMP_C: float = 95.0
 SURFACE_VOLUME_EXP: float = 2.0 / 3.0
 ODE_RTOL: float = 1.0e-4
 ODE_ATOL: float = 1.0e-5
@@ -127,6 +144,7 @@ class EngineSpecsConfig(TypedDict, total=False):
   geometry: GeometryConfigSection
   valves: ValvesConfigSection
   fuel: FuelConfigSection
+  lubrication: LubricationConfigSection
   operating_conditions: OperatingConfigSection
   combustion_model: CombustionConfigSection
 
@@ -270,6 +288,28 @@ class FourStrokeResults:
   knock_margin: float = 1.0
   is_knocking: bool = False
   knock_onset_deg: Optional[float] = None
+  oil_grade: str = SAE_10W40_NAME
+  oil_temp_c: float = DEFAULT_OIL_TEMP_C
+  fmep_pa: float = 0.0
+  bmep_pa: float = 0.0
+  brake_power_kw: float = 0.0
+  brake_torque_nm: float = 0.0
+  mechanical_efficiency: float = 1.0
+  bsfc_g_kwh: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _BrakePerformanceMetrics:
+  """Internal coupled lubrication, friction, and brake shaft output metrics."""
+
+  oil_grade: str
+  oil_temp_c: float
+  fmep_pa: float
+  bmep_pa: float
+  brake_power_kw: float
+  brake_torque_nm: float
+  mechanical_efficiency: float
+  bsfc_g_kwh: float
 
 
 class FourStrokeSimulator:
@@ -292,11 +332,23 @@ class FourStrokeSimulator:
       wiebe_a: float = DEFAULT_WIEBE_A,
       wiebe_m: float = DEFAULT_WIEBE_M,
       fuel: Optional[FuelBlendSpec] = None,
+      oil_spec: Optional[OilGradeSpec] = None,
+      splash_params: Optional[SplashSystemParams] = None,
+      thermal_params: Optional[SumpThermalParams] = None,
   ) -> None:
     self.geom = geom
     self.valves = valves if valves is not None else ValveGeometry()
     self.timing = timing if timing is not None else ValveTiming()
     self.fuel: FuelBlendSpec = fuel if fuel is not None else FuelBlendSpec.us_87_e10()
+    self.oil_spec: OilGradeSpec = (
+        oil_spec if oil_spec is not None else OilGradeSpec.sae_10w40()
+    )
+    self.splash_params: SplashSystemParams = (
+        splash_params if splash_params is not None else SplashSystemParams()
+    )
+    self.thermal_params: SumpThermalParams = (
+        thermal_params if thermal_params is not None else SumpThermalParams()
+    )
     self.gamma = gamma_air
     self.r_gas = r_gas
     self.q_fuel: float = float(q_fuel) if q_fuel is not None else self.fuel.lhv_j_kg
@@ -351,6 +403,12 @@ class FourStrokeSimulator:
     comb_cfg = cfg.get("combustion_model", {})
     start_btdc = float(comb_cfg.get("start_deg_btdc", -DEFAULT_WIEBE_SOC_DEG))
 
+    lub_cfg = cfg.get("lubrication", {})
+    oil_grade = str(lub_cfg.get("oil_grade", SAE_10W40_NAME))
+    oil_spec = OilGradeSpec.from_name(oil_grade)
+    splash_params = SplashSystemParams.from_config(cfg)
+    thermal_params = SumpThermalParams.from_config(cfg)
+
     return cls(
         geom=geom,
         valves=valves,
@@ -364,6 +422,9 @@ class FourStrokeSimulator:
         wiebe_a=float(comb_cfg.get("a", DEFAULT_WIEBE_A)),
         wiebe_m=float(comb_cfg.get("m", DEFAULT_WIEBE_M)),
         fuel=fuel_spec,
+        oil_spec=oil_spec,
+        splash_params=splash_params,
+        thermal_params=thermal_params,
     )
 
   def _valve_mass_and_enthalpy_fluxes(
@@ -479,6 +540,62 @@ class FourStrokeSimulator:
           "N2": FALLBACK_N2_MOLE_FRAC,
       }
 
+  def _evaluate_brake_performance(
+      self,
+      rpm: float,
+      theta_deg: np.ndarray,
+      p_cycle: np.ndarray,
+      nimep_pa: float,
+      w_net_j: float,
+      m_fuel_cycle_kg: float,
+      oil_temp_c: Optional[float],
+  ) -> _BrakePerformanceMetrics:
+    """Compute steady-state or specified-T_oil FMEP, BMEP, brake power, and BSFC."""
+    if oil_temp_c is None:
+      sump_res = solve_sump_thermal_balance(
+          geom=self.geom,
+          rpm=rpm,
+          theta_deg=theta_deg,
+          pressure_pa=p_cycle,
+          oil_spec=self.oil_spec,
+          splash_params=self.splash_params,
+          thermal_params=self.thermal_params,
+      )
+      resolved_temp_c = sump_res.equilibrium_oil_temp_c
+      fmep_pa = sump_res.friction.total_fmep_pa
+    else:
+      fric_res = evaluate_engine_friction(
+          geom=self.geom,
+          rpm=rpm,
+          oil_temp_c=float(oil_temp_c),
+          theta_deg=theta_deg,
+          pressure_pa=p_cycle,
+          oil_spec=self.oil_spec,
+          splash_params=self.splash_params,
+      )
+      resolved_temp_c = fric_res.oil_temp_c
+      fmep_pa = fric_res.total_fmep_pa
+
+    bmep_pa = nimep_pa - fmep_pa
+    w_brake_j = w_net_j - (fmep_pa * self.geom.displacement)
+    cycle_freq_hz = max(0.0, rpm) / CYCLES_PER_TWO_REV_DIVISOR
+    brake_power_kw = (w_brake_j * cycle_freq_hz) / WATT_TO_KW
+    brake_torque_nm = w_brake_j / FOUR_PI
+    mech_eff = bmep_pa / max(MIN_ORIFICE_PRESSURE_PA, nimep_pa)
+    fuel_flow_g_h = (m_fuel_cycle_kg * KG_TO_G) * cycle_freq_hz * SECONDS_PER_HOUR
+    bsfc_g_kwh = fuel_flow_g_h / max(MIN_BRAKE_POWER_KW, brake_power_kw)
+
+    return _BrakePerformanceMetrics(
+        oil_grade=self.oil_spec.grade,
+        oil_temp_c=float(resolved_temp_c),
+        fmep_pa=float(fmep_pa),
+        bmep_pa=float(bmep_pa),
+        brake_power_kw=float(brake_power_kw),
+        brake_torque_nm=float(brake_torque_nm),
+        mechanical_efficiency=float(mech_eff),
+        bsfc_g_kwh=float(bsfc_g_kwh),
+    )
+
   def solve_cycle(
       self,
       rpm: float = DEFAULT_RATED_RPM,
@@ -487,6 +604,7 @@ class FourStrokeSimulator:
       p_exhaust_pa: float = DEFAULT_EXHAUST_PRESSURE_PA,
       t_exhaust_k: float = DEFAULT_EXHAUST_TEMP_K,
       n_cycles: int = DEFAULT_N_CYCLES,
+      oil_temp_c: Optional[float] = None,
   ) -> FourStrokeResults:
     """Simulate full 720 deg cycles until convergence.
 
@@ -686,6 +804,15 @@ class FourStrokeSimulator:
         wiebe_m=self.wiebe_m,
         ivc_deg=self.timing.ivc_deg,
     )
+    brake_perf = self._evaluate_brake_performance(
+        rpm=rpm,
+        theta_deg=theta_deg,
+        p_cycle=p_cycle,
+        nimep_pa=float(nimep),
+        w_net_j=float(w_net),
+        m_fuel_cycle_kg=m_fuel_cycle,
+        oil_temp_c=oil_temp_c,
+    )
 
     return FourStrokeResults(
         theta_deg=theta_deg,
@@ -720,6 +847,14 @@ class FourStrokeSimulator:
         knock_margin=knock_eval.knock_margin,
         is_knocking=knock_eval.is_knocking,
         knock_onset_deg=knock_eval.knock_onset_crank_angle_deg,
+        oil_grade=brake_perf.oil_grade,
+        oil_temp_c=brake_perf.oil_temp_c,
+        fmep_pa=brake_perf.fmep_pa,
+        bmep_pa=brake_perf.bmep_pa,
+        brake_power_kw=brake_perf.brake_power_kw,
+        brake_torque_nm=brake_perf.brake_torque_nm,
+        mechanical_efficiency=brake_perf.mechanical_efficiency,
+        bsfc_g_kwh=brake_perf.bsfc_g_kwh,
     )
 
   def sweep_knock_safe_operating_map(
@@ -752,9 +887,12 @@ class FourStrokeSimulator:
             wiebe_a=self.wiebe_a,
             wiebe_m=self.wiebe_m,
             fuel=self.fuel,
+            oil_spec=self.oil_spec,
+            splash_params=self.splash_params,
+            thermal_params=self.thermal_params,
         )
         for rpm_val in rpms:
-          res = sim_pt.solve_cycle(rpm=float(rpm_val))
+          res = sim_pt.solve_cycle(rpm=float(rpm_val), oil_temp_c=DEFAULT_OIL_TEMP_C)
           sweep_points.append(
               KnockSweepPoint(
                   compression_ratio=float(cr),

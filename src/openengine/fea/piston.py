@@ -5,15 +5,18 @@ Analyzes two critical load cases:
 - LC-2: Coupled thermo-mechanical expansion (thermal growth & hot skirt clearance)
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import json
 import math
 import os
 from pathlib import Path
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+
+if TYPE_CHECKING:
+  from openengine.lubrication.thermal import SumpThermalBalanceResult
 
 from openengine.cad.piston import generate_piston
 from openengine.fea.calculix import (
@@ -47,6 +50,22 @@ class PistonFeaConfig:
   mesh_size_max_mm: float = 5.0
   min_yield_safety_factor: float = 1.60
   min_hot_clearance_mm: float = 0.020
+  undercrown_oil_htc_w_m2_k: float = 0.0
+  sump_oil_temp_c: float = 100.0
+
+  def with_splash_cooling(
+      self,
+      thermal: "SumpThermalBalanceResult",
+  ) -> "PistonFeaConfig":
+    """Return a copy updated with under-crown splash-oil cooled temperatures."""
+    return replace(
+        self,
+        crown_temp_c=thermal.cooled_piston_crown_temp_c,
+        ring_land_temp_c=thermal.cooled_piston_ring_land_temp_c,
+        skirt_temp_c=thermal.cooled_piston_skirt_temp_c,
+        undercrown_oil_htc_w_m2_k=thermal.undercrown_htc_w_m2_k,
+        sump_oil_temp_c=thermal.equilibrium_oil_temp_c,
+    )
 
 
 @dataclass
