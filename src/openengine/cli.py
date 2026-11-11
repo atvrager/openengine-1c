@@ -48,6 +48,12 @@ from openengine.fea import (
     run_piston_fea,
 )
 from openengine.infra.podman import PodmanRunner
+from openengine.lubrication import (
+    OilGradeSpec,
+    SplashSystemParams,
+    SumpThermalParams,
+    solve_sump_thermal_balance,
+)
 from openengine.reporting import (
     export_cad_models_to_gltf,
     export_fea_stress_to_webgl,
@@ -97,6 +103,13 @@ def info(config_path: str = "config/engine_specs.yaml"):
       "Fuel Specification",
       f"{fuel_spec.name} (AKI {fuel_spec.aki:.1f}, E{fuel_spec.ethanol_pct:.0f})",
   )
+  lub_cfg = cfg.get("lubrication", {})
+  if lub_cfg:
+    table.add_row(
+        "Lubrication System",
+        f"{lub_cfg.get('oil_grade', 'SAE 10W-40')},"
+        f" {float(lub_cfg.get('sump_volume_l', 0.65)):.2f} L wet-sump splash",
+    )
   table.add_row("Valvetrain", str(cfg["engine"]["valvetrain"]))
   table.add_row(
       "Rated / Redline Speed",
@@ -180,6 +193,13 @@ def thermo(
     table.add_row("NIMEP (Net Indicated MEP)", f"{res.nimep_pa / 1.0e5:.2f} bar")
     table.add_row("Indicated Engine Power", f"{res.power_kw:.2f} kW ({res.power_kw * 1.341:.1f} hp)")
     table.add_row("Indicated Engine Torque", f"{res.torque_nm:.2f} N·m")
+    table.add_row("Sump Oil & Equilibrium Temp", f"{res.oil_grade} @ {res.oil_temp_c:.1f} °C")
+    table.add_row("FMEP (Mechanical Friction MEP)", f"{res.fmep_pa / 1.0e5:.2f} bar")
+    table.add_row("BMEP (Brake Shaft MEP)", f"{res.bmep_pa / 1.0e5:.2f} bar")
+    table.add_row("Brake Engine Power", f"{res.brake_power_kw:.2f} kW ({res.brake_power_kw * 1.341:.1f} hp)")
+    table.add_row("Brake Engine Torque", f"{res.brake_torque_nm:.2f} N·m")
+    table.add_row("Mechanical Efficiency (η_m)", f"{res.mechanical_efficiency * 100:.1f} %")
+    table.add_row("Brake Specific Fuel Consumption (BSFC)", f"{res.bsfc_g_kwh:.1f} g/kWh")
     table.add_row("Wall Heat Loss per Cycle (Woschni)", f"{res.q_wall_loss_j:.1f} J ({res.heat_loss_fraction * 100:.1f} % fuel energy)")
     table.add_row("Cooling Fin Heat Dissipation Power", f"{res.mean_cooling_power_w:.0f} W ({res.mean_cooling_power_w / 1000.0:.2f} kW)")
     table.add_row("Peak Instantaneous Heat Flux", f"{res.peak_heat_flux_mw_m2:.2f} MW/m²")
@@ -197,6 +217,169 @@ def thermo(
       for sp, frac in res.equilibrium_species.items():
         sp_table.add_row(sp, f"{frac * 100:.2f} %")
       rich.print(sp_table)
+
+
+@app.command()
+def lub(
+    config_path: str = "config/engine_specs.yaml",
+    rpm: float = 0.0,
+    oil_grade: str = "",
+):
+  """Run wet-sump splash lubrication, 4-zone FMEP, and sump thermal balance."""
+  cfg = load_config(config_path)
+  lub_cfg = cfg.get("lubrication", {})
+  target_rpm = rpm if rpm > 0.0 else float(cfg["operating_conditions"]["rated_rpm"])
+  grade_name = oil_grade if oil_grade else str(lub_cfg.get("oil_grade", "SAE 10W-40"))
+
+  spec = OilGradeSpec.from_name(grade_name)
+  splash_params = SplashSystemParams.from_config(cfg)
+  thermal_params = SumpThermalParams.from_config(cfg)
+
+  sim = FourStrokeSimulator.from_config(cfg)
+  sim.oil_spec = spec
+  res = sim.solve_cycle(rpm=target_rpm)
+  tb = solve_sump_thermal_balance(
+      geom=sim.geom,
+      rpm=target_rpm,
+      theta_deg=res.theta_deg,
+      pressure_pa=res.pressure_pa,
+      oil_spec=spec,
+      splash_params=splash_params,
+      thermal_params=thermal_params,
+  )
+  fric = tb.friction
+  splash = tb.splash
+
+  rheo_table = Table(
+      title=f"Lubricant Rheology ({spec.grade} — Walther & Vogel)",
+      show_header=True,
+      header_style="bold magenta",
+  )
+  rheo_table.add_column("Temperature", style="cyan")
+  rheo_table.add_column("Kinematic ν (cSt)", style="green")
+  rheo_table.add_column("Walther μ (mPa·s)", style="green")
+  rheo_table.add_column("Vogel μ (mPa·s)", style="green")
+  rheo_table.add_column("Density (kg/m³)", style="green")
+  for tc in (20.0, 40.0, 100.0, tb.equilibrium_oil_temp_c):
+    st = spec.evaluate(tc)
+    label = f"{tc:.1f} °C (Equil)" if tc == tb.equilibrium_oil_temp_c else f"{tc:.0f} °C"
+    rheo_table.add_row(
+        label,
+        f"{st.kinematic_viscosity_cst:.2f}",
+        f"{st.dynamic_viscosity_pa_s * 1000.0:.2f}",
+        f"{st.vogel_dynamic_viscosity_pa_s * 1000.0:.2f}",
+        f"{st.density_kg_m3:.1f}",
+    )
+  rich.print(rheo_table)
+
+  fmep_table = Table(
+      title=f"4-Zone Mechanical Friction (FMEP) & Brake Output @ {target_rpm:.0f} RPM",
+      show_header=True,
+      header_style="bold blue",
+  )
+  fmep_table.add_column("Tribological Zone / Metric", style="cyan")
+  fmep_table.add_column("Value", style="bold green")
+  fmep_table.add_row(
+      "Zone 1: Piston Ring Pack & Skirt",
+      f"{fric.ring_skirt_fmep_pa / 1.0e5:.2f} bar ({fric.ring_skirt_heat_w:.0f} W)",
+  )
+  fmep_table.add_row(
+      "Zone 2: Rolling Crank Bearings & Viton Seals",
+      f"{fric.rolling_bearings_fmep_pa / 1.0e5:.2f} bar ({fric.rolling_bearings_heat_w:.0f} W)",
+  )
+  fmep_table.add_row(
+      "Zone 3: SOHC Valvetrain & #25 Roller Chain",
+      f"{fric.valvetrain_fmep_pa / 1.0e5:.2f} bar ({fric.valvetrain_heat_w:.0f} W)",
+  )
+  fmep_table.add_row(
+      "Zone 4: Con-Rod Splash Dipper & Bay Windage",
+      f"{fric.dipper_windage_fmep_pa / 1.0e5:.2f} bar ({fric.dipper_windage_heat_w:.0f} W)",
+  )
+  fmep_table.add_row(
+      "Total FMEP / Friction Power",
+      f"{fric.total_fmep_bar:.2f} bar ({fric.total_friction_power_w:.0f} W,"
+      f" {fric.friction_torque_nm:.2f} N·m)",
+  )
+  fmep_table.add_row("Net Indicated MEP (NIMEP)", f"{res.nimep_pa / 1.0e5:.2f} bar")
+  fmep_table.add_row("Brake Shaft MEP (BMEP)", f"{res.bmep_pa / 1.0e5:.2f} bar")
+  fmep_table.add_row(
+      "Brake Power / Torque",
+      f"{res.brake_power_kw:.2f} kW ({res.brake_power_kw * 1.341:.1f} hp) /"
+      f" {res.brake_torque_nm:.2f} N·m",
+  )
+  fmep_table.add_row(
+      "Mechanical Efficiency / BSFC",
+      f"{res.mechanical_efficiency * 100.0:.1f} % / {res.bsfc_g_kwh:.1f} g/kWh",
+  )
+  rich.print(fmep_table)
+
+  splash_table = Table(
+      title="Wet-Sump Splash Transport & SOHC Chain Drain-Back",
+      show_header=True,
+      header_style="bold yellow",
+  )
+  splash_table.add_column("Transport Metric", style="cyan")
+  splash_table.add_column("Value", style="bold green")
+  splash_table.add_row("Static Sump Pool Depth", f"{splash.static_pool_depth_mm:.1f} mm")
+  splash_table.add_row(
+      "Static / Dynamic Dipper Immersion",
+      f"{splash.static_immersion_mm:.2f} mm / {splash.dynamic_immersion_mm:.2f} mm",
+  )
+  splash_table.add_row(
+      "Suspended Oil In-Flight (Level Drop)",
+      f"{splash.oil_in_flight_l * 1000.0:.1f} mL (-{splash.dynamic_level_drop_mm:.2f} mm)",
+  )
+  splash_table.add_row(
+      "Dipper Tip Velocity / Ballistic Apex",
+      f"{splash.tip_throw_velocity_m_s:.2f} m/s / {splash.droplet_apex_height_m:.2f} m"
+      f" (Reaches Under-Crown: {splash.reaches_piston_undercrown})",
+  )
+  splash_table.add_row(
+      "#25 Chain Upward Oil Carry",
+      f"{splash.chain_oil_carry_g_s:.2f} g/s ({splash.chain_oil_carry_l_min:.2f} L/min)",
+  )
+  splash_table.add_row(
+      "Chain Tunnel Gravity Drain Capacity",
+      f"{splash.tunnel_drain_capacity_g_s:.1f} g/s ({splash.drain_safety_ratio:.1f}× safety)",
+  )
+  rich.print(splash_table)
+
+  therm_table = Table(
+      title="Sump Thermal Equilibrium & Piston Splash Cooling",
+      show_header=True,
+      header_style="bold green",
+  )
+  therm_table.add_column("Thermal Parameter", style="cyan")
+  therm_table.add_column("Value", style="bold green")
+  therm_table.add_row(
+      "Equilibrium Sump Oil Temperature",
+      f"{tb.equilibrium_oil_temp_c:.1f} °C (Limit ≤ {tb.max_allowable_oil_temp_c:.0f} °C,"
+      f" margin {tb.oil_temp_margin_c:+.1f} °C)",
+  )
+  therm_table.add_row(
+      "Sump Heat Load (Friction + Piston + Case)",
+      f"{tb.total_oil_heat_load_w:.0f} W ({tb.friction_heat_to_oil_w:.0f} +"
+      f" {tb.piston_splash_heat_w:.0f} + {tb.crankcase_conduction_w:.0f} W)",
+  )
+  therm_table.add_row(
+      "Finned Sump Conductance (UA)",
+      f"{tb.sump_overall_ua_w_k:.2f} W/K",
+  )
+  therm_table.add_row(
+      "Piston Under-Crown Splash HTC",
+      f"{tb.undercrown_htc_w_m2_k:.0f} W/(m²·K)",
+  )
+  therm_table.add_row(
+      "Cooled Piston Temps (Crown / Ring / Skirt)",
+      f"{tb.cooled_piston_crown_temp_c:.1f} / {tb.cooled_piston_ring_land_temp_c:.1f} /"
+      f" {tb.cooled_piston_skirt_temp_c:.1f} °C",
+  )
+  therm_table.add_row(
+      "Relieved Cylinder Barrel Heat Budget",
+      f"{tb.adjusted_barrel_heat_budget_w:.0f} W (vs {thermal_params.dry_barrel_heat_budget_w:.0f} W dry)",
+  )
+  therm_table.add_row("Overall Thermal & Transport Safe", str(tb.is_thermal_safe))
+  rich.print(therm_table)
 
 
 @app.command()
@@ -944,9 +1127,10 @@ def run_all(
   rich.print("[bold cyan]====================================================================[/bold cyan]")
   t_total_start = time.time()
 
-  # Phase 1: 0D Thermo & Valvetrain Dynamics
-  rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics & Valvetrain Dynamics...[/bold yellow]")
+  # Phase 1: 0D Thermo, Lubrication & Valvetrain Dynamics
+  rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics, Lubrication & Valvetrain Dynamics...[/bold yellow]")
   thermo(config_path="config/engine_specs.yaml")
+  lub(config_path="config/engine_specs.yaml")
   valvetrain(config_path="config/engine_specs.yaml")
   dynamics(config_path="config/engine_specs.yaml")
 

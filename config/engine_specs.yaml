@@ -51,3 +51,14 @@ balancing:
   rotating_balance_factor: 1.0     # 100% rotating mass counterweighted
   reciprocating_balance_factor: 0.5 # 50% reciprocating mass counterweighted
   speed_fluctuation_target: 0.035  # Max 3.5% speed fluctuation
+
+lubrication:
+  system: "wet_sump_splash_rolling"
+  oil_grade: "SAE 10W-40"
+  sump_volume_l: 0.6413            # [L] Wet-sump static oil fill capacity (live B-Rep sump pool)
+  dipper_immersion_mm: 5.0         # [mm] BDC static dipper submergence (4-6 mm window)
+  dipper_width_mm: 8.0             # [mm] Con-rod cap splash tang width
+  dipper_tip_radius_mm: 57.0       # [mm] Crank center to dipper tip radius at BDC (27 mm throw + 30 mm tip)
+  sump_fin_area_m2: 0.185          # [m^2] Finned sump pan + billet crankcase exterior area
+  cooling_airflow_m_s: 13.5        # [m/s] Shrouded flywheel fan air velocity across sump
+  max_oil_temp_c: 130.0            # [deg C] Maximum continuous sump oil ceiling

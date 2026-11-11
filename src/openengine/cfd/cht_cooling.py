@@ -6,7 +6,7 @@ Verifies that continuous combustion heat rejection (1.3 - 1.6 kW) is safely
 dissipated while keeping cylinder liner temperatures below the scuffing limit (180 deg C).
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -14,12 +14,15 @@ import re
 import shutil
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import gmsh
 import numpy as np
 
 from openengine.infra.podman import PodmanRunner
+
+if TYPE_CHECKING:
+  from openengine.lubrication.thermal import SumpThermalBalanceResult
 
 
 @dataclass
@@ -44,6 +47,19 @@ class ChtCoolingConfig:
   mesh_size_max_m: float = 0.009  # 9 mm maximum tetrahedral element size
   end_time_s: float = 20.0  # Pseudo-transient convergence end time
   delta_t_s: float = 0.5  # Time step size for thermal solver
+  piston_splash_relief_w: float = 0.0  # Barrel heat relief from piston oil splash
+
+  def with_splash_cooling(
+      self,
+      thermal: "SumpThermalBalanceResult",
+  ) -> "ChtCoolingConfig":
+    """Return a copy with barrel heat budget relieved by piston oil splash."""
+    relief_w = max(0.0, self.heat_budget_w - thermal.adjusted_barrel_heat_budget_w)
+    return replace(
+        self,
+        heat_budget_w=thermal.adjusted_barrel_heat_budget_w,
+        piston_splash_relief_w=relief_w,
+    )
 
 
 @dataclass

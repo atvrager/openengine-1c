@@ -132,12 +132,12 @@ def run_closed_loop_calibration(
     with open(comb_path, "r") as f:
       comb_data = json.load(f)
     wiebe = comb_data.get("wiebe", {})
-    wiebe_a = float(wiebe.get("a", 1.818))
-    wiebe_m = float(wiebe.get("m", 3.018))
-    wiebe_dur = float(wiebe.get("duration_deg", 73.6))
+    wiebe_a = float(wiebe.get("a", 1.681))
+    wiebe_m = float(wiebe.get("m", 2.941))
+    wiebe_dur = float(wiebe.get("duration_deg", 76.4))
     wiebe_soc = float(wiebe.get("theta_soc_deg", -22.0))
   else:
-    wiebe_a, wiebe_m, wiebe_dur, wiebe_soc = 1.818, 3.018, 73.6, -22.0
+    wiebe_a, wiebe_m, wiebe_dur, wiebe_soc = 1.681, 2.941, 76.4, -22.0
 
   port_path = Path(cfg.port_flow_results_path)
   if port_path.exists():
