@@ -54,6 +54,7 @@ from openengine.reporting import (
     generate_interactive_dashboard,
     generate_markdown_summary,
 )
+from openengine.thermo.cantera_kinetics import FuelBlendSpec
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
 from openengine.thermo.gas_exchange import FourStrokeSimulator, ValveGeometry, ValveTiming
 import rich
@@ -91,6 +92,11 @@ def info(config_path: str = "config/engine_specs.yaml"):
   table.add_row("Stroke", f"{geom['stroke']*1000:.1f} mm")
   table.add_row("Con-Rod Length", f"{geom['con_rod_length']*1000:.1f} mm")
   table.add_row("Compression Ratio", f"{geom['compression_ratio']:.1f} : 1")
+  fuel_spec = FuelBlendSpec.from_config(cfg)
+  table.add_row(
+      "Fuel Specification",
+      f"{fuel_spec.name} (AKI {fuel_spec.aki:.1f}, E{fuel_spec.ethanol_pct:.0f})",
+  )
   table.add_row("Valvetrain", str(cfg["engine"]["valvetrain"]))
   table.add_row(
       "Rated / Redline Speed",
@@ -140,14 +146,7 @@ def thermo(
     rich.print(table)
   else:
     # Full 720-degree 4-stroke breathing cycle
-    v_cfg = cfg.get("valves", {})
-    valves = ValveGeometry(
-        intake_diameter_m=v_cfg.get("intake_diameter", 0.030),
-        exhaust_diameter_m=v_cfg.get("exhaust_diameter", 0.026),
-        intake_max_lift_m=v_cfg.get("max_lift", 0.0085),
-        exhaust_max_lift_m=v_cfg.get("max_lift", 0.0080),
-    )
-    sim = FourStrokeSimulator(geom, valves=valves)
+    sim = FourStrokeSimulator.from_config(cfg)
     res = sim.solve_cycle(rpm=target_rpm)
 
     table = Table(
@@ -159,10 +158,20 @@ def thermo(
     table.add_column("Value", style="bold green")
 
     table.add_row("Displacement", f"{geom.displacement * 1.0e6:.1f} cm³")
+    table.add_row(
+        "Fuel Grade",
+        f"{sim.fuel.name} (AKI {sim.fuel.aki:.1f}, AFR {sim.afr:.1f})",
+    )
     table.add_row("Volumetric Efficiency (η_v)", f"{res.volumetric_efficiency * 100:.1f} %")
     table.add_row("Trapped Air-Fuel Mass", f"{res.trapped_mass_kg * 1.0e6:.1f} mg / cycle")
     table.add_row("Peak Cylinder Pressure (P_max)", f"{res.p_max_pa / 1.0e6:.2f} MPa")
     table.add_row("Peak Gas Temperature (T_max)", f"{res.t_max_k:.0f} K")
+    table.add_row("Peak End-Gas Temperature (T_u,max)", f"{res.end_gas_temp_max_k:.0f} K")
+    knock_label = "KNOCK DETECTED" if res.is_knocking else "SAFE"
+    table.add_row(
+        "Livengood-Wu Knock Integral",
+        f"{res.knock_integral:.3f} ({knock_label}, margin {res.knock_margin:+.3f})",
+    )
     table.add_row("Gross Indicated Work (High-P loop)", f"{res.gross_work_j:.1f} J")
     table.add_row("Pumping Work Loss (Low-P loop)", f"{res.pump_work_j:.1f} J")
     table.add_row("Net Indicated Work (W_net)", f"{res.net_work_j:.1f} J")
