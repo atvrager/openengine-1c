@@ -6,7 +6,9 @@ from .bearing import (
     BearingReport,
     HydrodynamicBearing,
     OilProperties,
+    finite_bearing_sommerfeld,
     ocvirk_load_capacity,
+    sommerfeld_long_load_capacity,
 )
 from .flywheel import (
     FlywheelDimensions,
@@ -50,4 +52,6 @@ __all__ = [
     "BearingCycleState",
     "BearingReport",
     "ocvirk_load_capacity",
+    "sommerfeld_long_load_capacity",
+    "finite_bearing_sommerfeld",
 ]

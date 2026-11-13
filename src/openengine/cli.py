@@ -229,8 +229,12 @@ def dynamics(
       redline_rpm=float(cfg["operating_conditions"]["redline_rpm"]),
   )
 
-  # Big-end bearing lubrication via HydrodynamicBearing
+  # Big-end bearing lubrication via finite-width dynamic HydrodynamicBearing
   f_big_end = np.sqrt(forces.net_wrist_pin_force_n**2 + forces.cylinder_side_thrust_n**2)
+  th_rad = np.radians(thermo_res.theta_deg)
+  lam = geom.crank_radius / geom.con_rod_length
+  omega = target_rpm * (2.0 * np.pi / 60.0)
+  conrod_omega = -lam * omega * np.cos(th_rad) / np.sqrt(1.0 - (lam * np.sin(th_rad)) ** 2)
   big_end_bearing = HydrodynamicBearing(
       geom=BearingGeometry(
           name="Con-Rod Big-End Journal",
@@ -243,6 +247,9 @@ def dynamics(
       rpm=target_rpm,
       theta_deg=thermo_res.theta_deg,
       radial_load_n=f_big_end,
+      load_x_n=forces.cylinder_side_thrust_n,
+      load_z_n=-forces.net_wrist_pin_force_n,
+      sleeve_omega_rad_s=conrod_omega,
   )
 
   table = Table(
@@ -281,7 +288,7 @@ def dynamics(
   rich.print(fw_table)
 
   brg_table = Table(
-      title="Big-End Hydrodynamic Journal Bearing (Ocvirk Solution)",
+      title="Big-End Finite-Width Dynamic Journal Bearing (Squeeze-Film Orbit)",
       show_header=True,
       header_style="bold blue",
   )
