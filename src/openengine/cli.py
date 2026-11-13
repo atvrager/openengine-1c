@@ -234,8 +234,8 @@ def dynamics(
   big_end_bearing = HydrodynamicBearing(
       geom=BearingGeometry(
           name="Con-Rod Big-End Journal",
-          journal_diameter_m=g.get("crankpin_diameter", 0.030),
-          bearing_width_m=0.016,
+          journal_diameter_m=g.get("crankpin_diameter", 0.028),
+          bearing_width_m=0.020,
           radial_clearance_m=20.0e-6,
       )
   )
@@ -426,7 +426,11 @@ def cad(
   rich.print(f"  [cyan]Min Intake P-V Clearance:[/cyan] [bold green]{clr.min_intake_pv_clearance_mm:.2f} mm[/bold green] @ {clr.min_intake_pv_angle_deg:.0f}° CA (Target >= 1.5 mm)")
   rich.print(f"  [cyan]Min Exhaust P-V Clearance:[/cyan] [bold green]{clr.min_exhaust_pv_clearance_mm:.2f} mm[/bold green] @ {clr.min_exhaust_pv_angle_deg:.0f}° CA (Target >= 1.5 mm)")
   rich.print(f"  [cyan]Min Rod-to-Liner Clearance:[/cyan] [bold green]{clr.min_rod_to_liner_clearance_mm:.2f} mm[/bold green] @ {clr.min_rod_to_liner_angle_deg:.0f}° CA (Target >= 5.0 mm)")
-  rich.print(f"  [cyan]Kinematic Interference Check:[/cyan] [bold green]{'PASS (Clearance Verified)' if clr.is_clearance_safe else 'FAIL'}[/bold green]")
+  rich.print(f"  [cyan]3D B-Rep Interference Hits:[/cyan] [{'bold green' if clr.interference_hits == 0 else 'bold red'}]{clr.interference_hits}[/{'bold green' if clr.interference_hits == 0 else 'bold red'}]")
+  status_style = "bold green" if clr.is_clearance_safe else "bold red"
+  rich.print(f"  [cyan]Kinematic Interference Check:[/cyan] [{status_style}]{'PASS (Clearance Verified)' if clr.is_clearance_safe else 'FAIL'}[/{status_style}]")
+  if not clr.is_clearance_safe:
+    raise typer.Exit(code=1)
 
   assembly = generate_engine_assembly(0.0)
   assembly_file = out_path / "engine_assembly.step"

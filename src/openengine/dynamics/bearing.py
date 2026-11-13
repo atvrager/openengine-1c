@@ -106,8 +106,8 @@ class HydrodynamicBearing:
   ):
     self.geom = geom or BearingGeometry(
         name="ConnectingRodBigEnd",
-        journal_diameter_m=0.030,
-        bearing_width_m=0.016,
+        journal_diameter_m=0.028,
+        bearing_width_m=0.020,
         radial_clearance_m=20.0e-6,
     )
     self.oil = oil or OilProperties()

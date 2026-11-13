@@ -844,10 +844,33 @@ def generate_interactive_dashboard(
     // Load analytical kinematic trajectory artifact
     const trajectoryData = {traj_json_str};
 
+    function lerpFrame(a, b, t) {{
+      if (!a) return b;
+      if (!b || t <= 0) return a;
+      const lerp = (u, v) => u + (v - u) * t;
+      return {{
+        crank_angle_deg: lerp(a.crank_angle_deg, a.crank_angle_deg + 2.0, t),
+        crankpin_x_mm: lerp(a.crankpin_x_mm, b.crankpin_x_mm, t),
+        crankpin_z_mm: lerp(a.crankpin_z_mm, b.crankpin_z_mm, t),
+        con_rod_angle_deg: lerp(a.con_rod_angle_deg, b.con_rod_angle_deg, t),
+        wrist_pin_z_mm: lerp(a.wrist_pin_z_mm, b.wrist_pin_z_mm, t),
+        piston_crown_z_mm: lerp(a.piston_crown_z_mm, b.piston_crown_z_mm, t),
+        intake_valve_lift_mm: lerp(a.intake_valve_lift_mm, b.intake_valve_lift_mm, t),
+        exhaust_valve_lift_mm: lerp(a.exhaust_valve_lift_mm, b.exhaust_valve_lift_mm, t),
+        intake_pv_clearance_mm: lerp(a.intake_pv_clearance_mm, b.intake_pv_clearance_mm, t),
+        exhaust_pv_clearance_mm: lerp(a.exhaust_pv_clearance_mm, b.exhaust_pv_clearance_mm, t),
+        rod_to_liner_clearance_mm: lerp(a.rod_to_liner_clearance_mm, b.rod_to_liner_clearance_mm, t),
+        is_safe: a.is_safe && b.is_safe
+      }};
+    }}
+
     function updateKinematics(caDeg) {{
       const normalizedCA = ((caDeg % 720) + 720) % 720;
-      const frameIdx = Math.min(Math.floor(normalizedCA / 2.0), Math.max(0, trajectoryData.length - 1));
-      const frame = trajectoryData[frameIdx] || {{
+      const exactIdx = normalizedCA / 2.0;
+      const frameIdx = Math.min(Math.floor(exactIdx), Math.max(0, trajectoryData.length - 1));
+      const nextIdx = trajectoryData.length > 0 ? (frameIdx + 1) % trajectoryData.length : 0;
+      const alpha = exactIdx - frameIdx;
+      const fallbackFrame = {{
         crank_angle_deg: normalizedCA,
         crankpin_x_mm: 27.0 * Math.sin(normalizedCA * Math.PI / 180),
         crankpin_z_mm: -159.0 + 27.0 * Math.cos(normalizedCA * Math.PI / 180),
@@ -861,6 +884,9 @@ def generate_interactive_dashboard(
         rod_to_liner_clearance_mm: 26.0,
         is_safe: true
       }};
+      const frame = trajectoryData.length > 0
+        ? lerpFrame(trajectoryData[frameIdx], trajectoryData[nextIdx], alpha)
+        : fallbackFrame;
 
       // 1. Crankshaft rotation about Y (main journal axis at Z = -159.0 mm)
       crankGroup.rotation.y = THREE.MathUtils.degToRad(normalizedCA);
