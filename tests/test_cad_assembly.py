@@ -55,3 +55,37 @@ def test_master_assembly_compound():
   # Combined volume of head, block, liner, crank, rod, piston, pin, valves ~ 1656 cm3
   assert 1500.0 <= vol_cm3 <= 1800.0
   assert len(comp.solids()) >= 8
+
+
+def _overlap_volume_mm3(part_a, part_b) -> float:
+  """Compute 3D B-Rep intersection volume in mm^3 between two solids."""
+  inter = part_a.intersect(part_b)
+  if not inter:
+    return 0.0
+  return float(sum(s.volume for s in inter))
+
+
+def test_assembly_720deg_3d_interference():
+  """Verify zero 3D B-Rep geometric interference across the full 720-degree kinematic cycle."""
+  asm = EngineAssembly()
+  collisions = asm.check_3d_interference(step_deg=15.0)
+  assert not collisions, (
+      f"3D B-Rep interference detected across 720-deg cycle ({len(collisions)} hits); "
+      f"first hits: {collisions[:6]}"
+  )
+
+  # Also verify build_assembly() itself produces 9 distinct non-overlapping solids at key crank angles
+  for angle_deg in (0.0, 90.0, 180.0, 270.0, 360.0):
+    comp = asm.build_assembly(angle_deg)
+    solids = comp.solids()
+    assert len(solids) == 9, (
+        f"Expected 9 solid components in master assembly at CA={angle_deg}, got {len(solids)}"
+    )
+    # Solids order in build_assembly: [head, block, liner, crank, rod, piston, wrist_pin, in_valve, ex_valve]
+    _, _, b_liner, b_crank, b_rod, b_piston, _, b_in_v, b_ex_v = solids
+    assert _overlap_volume_mm3(b_crank, b_rod) <= 1e-3
+    assert _overlap_volume_mm3(b_crank, b_piston) <= 1e-3
+    assert _overlap_volume_mm3(b_crank, b_liner) <= 1e-3
+    assert _overlap_volume_mm3(b_rod, b_liner) <= 1e-3
+    assert _overlap_volume_mm3(b_piston, b_in_v) <= 1e-3
+    assert _overlap_volume_mm3(b_piston, b_ex_v) <= 1e-3

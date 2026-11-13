@@ -1,11 +1,10 @@
 """Parametric Counterweighted Crankshaft Solid Model via build123d / Open CASCADE.
 
 Generates a watertight B-Rep CAD model of a forged 4340 alloy steel single-throw crankshaft:
-- Precision ground crankpin (28.0 mm diameter x 16.0 mm width, 27.0 mm throw radius)
-- Dual profiled counterweight cheeks shaped for 50% reciprocating mass balancing
-- Lightening holes on the crankpin side to maximize polar counterweight moment
+- Precision ground hollow crankpin (28.0 mm diameter x 21.0 mm width, 14.0 mm rifle-drilled bore, 27.0 mm throw radius)
+- Dual profiled counterweight cheeks shaped for 50% reciprocating mass balancing (clearing 20.0 mm con-rod big end)
 - Dual main bearing journals (32.0 mm diameter x 22.0 mm length)
-- Cross-drilled pressurized oil gallery feeding main oil pressure to the big-end bearing
+- Cross-drilled pressurized oil gallery feeding main oil pressure through the crankpin oil passage
 - Left flywheel mounting taper and threaded retention nose
 - Right timing chain drive sprocket journal and Power Take-Off (PTO) output shaft
 """
@@ -36,11 +35,12 @@ class CrankshaftParams:
 
   stroke_m: float = 0.054  # 54.0 mm stroke (27.0 mm crank throw)
   crankpin_diameter_m: float = 0.028  # 28.0 mm crankpin journal diameter
-  crankpin_width_m: float = 0.016  # 16.0 mm between web inner faces
+  crankpin_width_m: float = 0.021  # 21.0 mm between web inner faces (0.5 mm/side clearance for 20 mm rod)
+  crankpin_bore_diameter_m: float = 0.014  # 14.0 mm axial lightening bore through crankpin
   main_journal_diameter_m: float = 0.032  # 32.0 mm main journal diameter
   main_journal_length_m: float = 0.022  # 22.0 mm main bearing journal length
-  web_thickness_m: float = 0.014  # 14.0 mm crank web axial thickness
-  counterweight_radius_m: float = 0.0485  # 48.5 mm outer counterweight radius
+  web_thickness_m: float = 0.0145  # 14.5 mm crank web axial thickness
+  counterweight_radius_m: float = 0.0495  # 49.5 mm outer counterweight radius (clears liner bottom)
   timing_journal_diameter_m: float = 0.025  # 25.0 mm timing sprocket seat
   timing_journal_length_m: float = 0.016  # 16.0 mm timing sprocket length
   pto_shaft_diameter_m: float = 0.020  # 20.0 mm PTO drive shaft diameter
@@ -57,48 +57,44 @@ def generate_crankshaft(params: Optional[CrankshaftParams] = None) -> Part:
   r_stroke = (p.stroke_m * 1000.0) / 2.0  # 27 mm
   d_pin = p.crankpin_diameter_m * 1000.0
   w_pin = p.crankpin_width_m * 1000.0
+  r_pin_bore = (p.crankpin_bore_diameter_m * 1000.0) / 2.0
   d_main = p.main_journal_diameter_m * 1000.0
   l_main = p.main_journal_length_m * 1000.0
   t_web = p.web_thickness_m * 1000.0
   r_max = p.counterweight_radius_m * 1000.0
 
-  # 1. Crank web cheek profile in XZ plane
+  # 1. Forged crank web cheek profile in XZ plane:
+  # Tapered web arm bridging crankpin boss to main journal + lower counterweight sector
   with BuildSketch(Plane.XZ) as cheek_sketch:
-    with Locations((0.0, r_stroke)):
-      Circle(radius=18.0)
+    with BuildSketch(mode=Mode.PRIVATE) as arm_sk:
+      with Locations((0.0, r_stroke)):
+        Circle(radius=(d_pin / 2.0) + 3.5)
+      with Locations((0.0, 0.0)):
+        Circle(radius=(d_main / 2.0) + 3.0)
+      make_hull()
+    insert(arm_sk.sketch)
     with BuildSketch(mode=Mode.PRIVATE) as cw_sk:
       Circle(radius=r_max)
-      with Locations((0.0, 30.0)):
-        Rectangle(120.0, 60.0, mode=Mode.SUBTRACT)
+      with Locations((0.0, -2.0 + 35.0)):
+        Rectangle(120.0, 70.0, mode=Mode.SUBTRACT)
     insert(cw_sk.sketch)
-    make_hull()
-    with Locations((-28.0, 14.0), (28.0, 14.0)):
-      Circle(radius=14.0, mode=Mode.SUBTRACT)
 
   with BuildPart() as crank:
     # 2. Crankpin journal (centered at Y = 0, Z = r_stroke)
     with Locations((0.0, 0.0, r_stroke)):
       Cylinder(radius=d_pin / 2.0, height=w_pin, rotation=(90.0, 0.0, 0.0))
 
-    # 3. Right cheek (extending +Y from w_pin/2 to w_pin/2 + t_web)
-    with Locations((0.0, w_pin / 2.0, 0.0)):
-      extrude(cheek_sketch.sketch, amount=t_web, dir=(0.0, 1.0, 0.0))
-    # Lightening holes on pin side
-    with Locations(
-        (-14.0, (w_pin / 2.0) + (t_web / 2.0), 24.0),
-        (14.0, (w_pin / 2.0) + (t_web / 2.0), 24.0),
-    ):
-      Cylinder(radius=5.0, height=t_web + 2.0, rotation=(90.0, 0.0, 0.0), mode=Mode.SUBTRACT)
+    # 3. Right cheek (extending +Y from +w_pin/2 to +w_pin/2 + t_web)
+    # Translate the explicit Sketch because `with Locations(...)` does not shift an existing Sketch argument.
+    extrude(cheek_sketch.sketch.translate((0.0, w_pin / 2.0, 0.0)), amount=t_web, dir=(0.0, 1.0, 0.0))
 
     # 4. Left cheek (extending -Y from -w_pin/2 to -w_pin/2 - t_web)
-    with Locations((0.0, -w_pin / 2.0, 0.0)):
-      extrude(cheek_sketch.sketch, amount=t_web, dir=(0.0, -1.0, 0.0))
-    # Lightening holes on pin side
-    with Locations(
-        (-14.0, (-w_pin / 2.0) - (t_web / 2.0), 24.0),
-        (14.0, (-w_pin / 2.0) - (t_web / 2.0), 24.0),
-    ):
-      Cylinder(radius=5.0, height=t_web + 2.0, rotation=(90.0, 0.0, 0.0), mode=Mode.SUBTRACT)
+    extrude(cheek_sketch.sketch.translate((0.0, -w_pin / 2.0, 0.0)), amount=t_web, dir=(0.0, -1.0, 0.0))
+
+    # Axial lightening bore through crankpin (plug-sealed hollow pin / sludge trap)
+    if r_pin_bore > 0.0:
+      with Locations((0.0, 0.0, r_stroke)):
+        Cylinder(radius=r_pin_bore, height=w_pin + (2.0 * t_web) + 4.0, rotation=(90.0, 0.0, 0.0), mode=Mode.SUBTRACT)
 
     # 5. Right main journal
     y_right_main = (w_pin / 2.0) + t_web + (l_main / 2.0)
@@ -131,7 +127,7 @@ def generate_crankshaft(params: Optional[CrankshaftParams] = None) -> Part:
     with Locations((0.0, y_left_edge - l_fw - 7.5, 0.0)):
       Cylinder(radius=8.0, height=15.0, rotation=(90.0, 0.0, 0.0))
 
-    # 9. Cross-drilled pressurized oil gallery from left main journal to crankpin
+    # 9. Cross-drilled pressurized oil gallery from left main journal to crankpin + radial journal feed
     p_main_feed = Vector(0.0, (-w_pin / 2.0) - (t_web / 2.0), 0.0)
     p_pin_center = Vector(0.0, 0.0, r_stroke)
     v_oil = p_pin_center - p_main_feed
@@ -142,6 +138,10 @@ def generate_crankshaft(params: Optional[CrankshaftParams] = None) -> Part:
 
     with Locations((mid_oil.X, mid_oil.Y, mid_oil.Z)):
       Cylinder(radius=r_oil, height=len_oil + 4.0, rotation=(-theta_x + 90.0, 0.0, 0.0), mode=Mode.SUBTRACT)
+
+    if r_pin_bore > 0.0:
+      with Locations((0.0, 0.0, r_stroke + (d_pin / 4.0) + (r_pin_bore / 2.0))):
+        Cylinder(radius=1.5, height=d_pin / 2.0, mode=Mode.SUBTRACT)
 
   return crank.part
 

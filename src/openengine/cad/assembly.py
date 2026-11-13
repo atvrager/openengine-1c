@@ -65,6 +65,7 @@ class ClearanceReport:
   min_rod_to_liner_angle_deg: float
   target_pv_clearance_mm: float = 1.50
   target_rod_clearance_mm: float = 5.00
+  interference_hits: int = 0
   is_clearance_safe: bool = True
 
 
@@ -146,8 +147,93 @@ class EngineAssembly:
         is_safe=is_safe,
     )
 
-  def sweep_clearances(self, step_deg: float = 2.0) -> ClearanceReport:
-    """Evaluate clearances across the full 720-degree cycle to ensure zero mechanical interference."""
+  def _base_moving_solids(self) -> Dict[str, Part]:
+    """Generate canonical CAD solids once for reuse across assembly poses and interference sweeps."""
+    with BuildPart() as wp:
+      Cylinder(radius=8.0, height=48.0, rotation=(90.0, 0.0, 0.0))
+    return {
+        "crank": generate_crankshaft(),
+        "rod": generate_connecting_rod().rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0),
+        "piston": generate_piston(),
+        "wrist_pin": wp.part,
+        "in_valve": generate_poppet_valve(head_diam_m=0.030),
+        "ex_valve": generate_poppet_valve(head_diam_m=0.026),
+    }
+
+  def _pose_moving_parts(
+      self,
+      crank_angle_deg: float,
+      base: Dict[str, Part],
+  ) -> Tuple[EngineAssemblyState, Dict[str, Part]]:
+    """Transform moving solids to their instantaneous kinematic pose at crank_angle_deg."""
+    st = self.solve_kinematics(crank_angle_deg)
+    crank = base["crank"].rotate(Axis.Y, crank_angle_deg).translate((0.0, 0.0, self.z_crank_main_mm))
+    rod = base["rod"].rotate(Axis.Y, -st.con_rod_angle_deg).translate((0.0, 0.0, st.wrist_pin_z_mm))
+    # Piston pin bore is at local Z = -3.0 mm; translate to align with z_wrist
+    piston = base["piston"].translate((0.0, 0.0, st.wrist_pin_z_mm + 3.0))
+    wrist_pin = base["wrist_pin"].translate((0.0, 0.0, st.wrist_pin_z_mm))
+
+    d_in_x = -st.intake_valve_lift_mm * np.sin(np.radians(15.0))
+    d_in_z = -st.intake_valve_lift_mm * np.cos(np.radians(15.0))
+    in_valve = base["in_valve"].rotate(Axis.Y, 15.0).translate((16.0 + d_in_x, 0.0, 6.0 + d_in_z))
+
+    d_ex_x = st.exhaust_valve_lift_mm * np.sin(np.radians(15.0))
+    d_ex_z = -st.exhaust_valve_lift_mm * np.cos(np.radians(15.0))
+    ex_valve = base["ex_valve"].rotate(Axis.Y, -15.0).translate((-16.0 + d_ex_x, 0.0, 6.0 + d_ex_z))
+
+    return st, {
+        "crank": crank,
+        "rod": rod,
+        "piston": piston,
+        "wrist_pin": wrist_pin,
+        "in_valve": in_valve,
+        "ex_valve": ex_valve,
+    }
+
+  def check_3d_interference(
+      self,
+      step_deg: float = 15.0,
+      vol_tol_mm3: float = 1.0e-3,
+  ) -> List[str]:
+    """Verify zero 3D B-Rep overlap across moving-component pairs over the 720-degree cycle."""
+    base = self._base_moving_solids()
+    liner = generate_cylinder_liner()
+    hits: List[str] = []
+
+    if len(base["crank"].solids()) != 1:
+      hits.append(f"crankshaft has {len(base['crank'].solids())} disconnected solids (expected 1)")
+
+    pair_names = [
+        ("crank", "rod"),
+        ("crank", "piston"),
+        ("crank", "wrist_pin"),
+        ("crank", "liner"),
+        ("rod", "piston"),
+        ("rod", "wrist_pin"),
+        ("rod", "liner"),
+        ("piston", "wrist_pin"),
+        ("piston", "liner"),
+        ("piston", "in_valve"),
+        ("piston", "ex_valve"),
+    ]
+
+    for angle_deg in np.arange(0.0, 720.0, step_deg):
+      _, posed = self._pose_moving_parts(float(angle_deg), base)
+      parts = {**posed, "liner": liner}
+      for name_a, name_b in pair_names:
+        inter = parts[name_a].intersect(parts[name_b])
+        vol = float(sum(s.volume for s in inter)) if inter else 0.0
+        if vol > vol_tol_mm3:
+          hits.append(f"CA={angle_deg:.1f} deg {name_a}-{name_b}: {vol:.2f} mm^3")
+
+    return hits
+
+  def sweep_clearances(
+      self,
+      step_deg: float = 2.0,
+      interference_step_deg: float = 30.0,
+  ) -> ClearanceReport:
+    """Evaluate analytical clearances and 3D B-Rep interference across the full 720-degree cycle."""
     angles = np.arange(0.0, 720.0, step_deg)
 
     min_in_clr = 999.0
@@ -169,7 +255,13 @@ class EngineAssembly:
         min_rod_clr = st.rod_to_liner_clearance_mm
         min_rod_ang = a
 
-    is_safe = (min_in_clr >= 1.50) and (min_ex_clr >= 1.50) and (min_rod_clr >= 5.00)
+    interference_hits = self.check_3d_interference(step_deg=interference_step_deg)
+    is_safe = (
+        (min_in_clr >= 1.50)
+        and (min_ex_clr >= 1.50)
+        and (min_rod_clr >= 5.00)
+        and (len(interference_hits) == 0)
+    )
 
     return ClearanceReport(
         min_intake_pv_clearance_mm=float(min_in_clr),
@@ -180,60 +272,28 @@ class EngineAssembly:
         min_rod_to_liner_angle_deg=float(min_rod_ang),
         target_pv_clearance_mm=1.50,
         target_rod_clearance_mm=5.00,
+        interference_hits=len(interference_hits),
         is_clearance_safe=is_safe,
     )
 
   def build_assembly(self, crank_angle_deg: float = 0.0) -> Compound:
     """Generate and mate all engine components into a master multi-body Compound at angle theta."""
-    st = self.solve_kinematics(crank_angle_deg)
-
-    # 1. Base static components (Block, Liner, Head)
     block = generate_cylinder_block()
     liner = generate_cylinder_liner()
     head = generate_cylinder_head()
 
-    # 2. Crankshaft (rotated by theta about Y, translated to main journal axis Z = -159 mm)
-    crank_base = generate_crankshaft()
-    crank = crank_base.rotate(Axis.Y, crank_angle_deg).translate((0.0, 0.0, self.z_crank_main_mm))
-
-    # 3. Connecting Rod (aligned to Z, tilted by con_rod_angle_deg about Y, translated to wrist pin)
-    rod_base = generate_connecting_rod()
-    rod_aligned = rod_base.rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0)
-    rod = rod_aligned.rotate(Axis.Y, -st.con_rod_angle_deg).translate((0.0, 0.0, st.wrist_pin_z_mm))
-
-    # 4. Piston & Wrist Pin (translated to current wrist pin position)
-    piston_base = generate_piston()
-    # Piston pin bore is at local Z = -3.0 mm; translate to align with z_wrist
-    piston = piston_base.translate((0.0, 0.0, st.wrist_pin_z_mm + 3.0))
-
-    with BuildPart() as wp:
-      Cylinder(radius=8.0, height=48.0, rotation=(90.0, 0.0, 0.0))
-    wrist_pin = wp.part.translate((0.0, 0.0, st.wrist_pin_z_mm))
-
-    # 5. Intake & Exhaust Valves (seated at Z = 6.0 mm, tilted at +/- 15 deg, displaced by lift)
-    in_valve_base = generate_poppet_valve(head_diam_m=0.030)
-    ex_valve_base = generate_poppet_valve(head_diam_m=0.026)
-
-    # Intake valve translation along 15 deg inclined axis
-    d_in_x = -st.intake_valve_lift_mm * np.sin(np.radians(15.0))
-    d_in_z = -st.intake_valve_lift_mm * np.cos(np.radians(15.0))
-    in_valve = in_valve_base.rotate(Axis.Y, 15.0).translate((16.0 + d_in_x, 0.0, 6.0 + d_in_z))
-
-    # Exhaust valve translation along -15 deg inclined axis
-    d_ex_x = st.exhaust_valve_lift_mm * np.sin(np.radians(15.0))
-    d_ex_z = -st.exhaust_valve_lift_mm * np.cos(np.radians(15.0))
-    ex_valve = ex_valve_base.rotate(Axis.Y, -15.0).translate((-16.0 + d_ex_x, 0.0, 6.0 + d_ex_z))
+    _, posed = self._pose_moving_parts(crank_angle_deg, self._base_moving_solids())
 
     solids = [
         head,
         block,
         liner,
-        crank,
-        rod,
-        piston,
-        wrist_pin,
-        in_valve,
-        ex_valve,
+        posed["crank"],
+        posed["rod"],
+        posed["piston"],
+        posed["wrist_pin"],
+        posed["in_valve"],
+        posed["ex_valve"],
     ]
     return Compound(solids)
 
