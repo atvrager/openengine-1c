@@ -55,6 +55,20 @@ from .cylinder_head import (
     generate_poppet_valve,
 )
 from .piston import generate_piston
+from .step_export import (
+    FLUID_OPACITY,
+    HOUSING_OPACITY,
+    LINER_OPACITY,
+    MATERIAL_RGB_PALETTE,
+    OPAQUE_OPACITY,
+    SHROUD_OPACITY,
+    SINGLE_HOUSING_OPACITY,
+    export_styled_step,
+    heal_part_edges,
+    max_solid_edge_surface_gap_mm,
+    style_named_parts_as_compound,
+    style_single_part,
+)
 from .twin_metrics import (
     get_cad_compression_ratio,
     get_cad_dipper_immersion_mm,
@@ -133,4 +147,16 @@ __all__ = [
     "get_cad_sump_oil_volume_l",
     "get_cad_sump_splash_metrics",
     "get_cad_valvetrain_masses_kg",
+    "FLUID_OPACITY",
+    "HOUSING_OPACITY",
+    "LINER_OPACITY",
+    "MATERIAL_RGB_PALETTE",
+    "OPAQUE_OPACITY",
+    "SHROUD_OPACITY",
+    "SINGLE_HOUSING_OPACITY",
+    "export_styled_step",
+    "heal_part_edges",
+    "max_solid_edge_surface_gap_mm",
+    "style_named_parts_as_compound",
+    "style_single_part",
 ]

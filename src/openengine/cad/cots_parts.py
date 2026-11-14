@@ -27,6 +27,8 @@ from build123d import (
     make_hull,
 )
 
+from openengine.cad.step_export import heal_part_edges
+
 DEFAULT_BOM_YAML_PATH: Path = Path("config/mcmaster_bom.yaml")
 DEFAULT_COTS_STEP_DIR: Path = Path("assets/cots_step")
 
@@ -515,7 +517,7 @@ def generate_carburetor_vm26() -> Part:
       Box(CARB_BOWL_WIDTH_XY_MM, CARB_BOWL_WIDTH_XY_MM, bowl_h)
     with Locations((mid_x, 0.0, CARB_MOUNT_Z_MM)):
       Cylinder(radius=CARB_VENTURI_INNER_R_MM, height=CARB_BODY_LEN_X_MM + CUT_MARGIN_MM, rotation=(0.0, ROT_Y_90_DEG, 0.0), mode=Mode.SUBTRACT)
-  return carb.part
+  return heal_part_edges(carb.part)
 
 
 def generate_hall_pickup_and_cdi() -> Dict[str, Part]:

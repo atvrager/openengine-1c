@@ -24,7 +24,6 @@ from build123d import (
     Locations,
     Part,
     Vector,
-    export_step,
 )
 
 from openengine.cad.connecting_rod import DEFAULT_CENTER_TO_CENTER_M, generate_connecting_rod
@@ -44,6 +43,7 @@ from openengine.cad.cylinder_head import (
     generate_poppet_valve,
 )
 from openengine.cad.piston import generate_piston
+from openengine.cad.step_export import style_named_parts_as_compound
 
 MM_PER_M: float = 1000.0
 HALF_FACTOR: float = 0.5
@@ -67,6 +67,18 @@ DEFAULT_INTERFERENCE_VOL_TOL_MM3: float = 1.0e-3
 DEFAULT_SWEEP_STEP_DEG: float = 2.0
 SWEEP_INTERFERENCE_STEP_DEG: float = 30.0
 INIT_MIN_CLEARANCE_MM: float = 999.0
+
+MASTER_ASSEMBLY_MATERIALS: Dict[str, str] = {
+    "cylinder_head": "ALUMINUM_6061_T6",
+    "cylinder_block": "ALUMINUM_6061_T6",
+    "cylinder_liner": "DOM_STEEL_A513_T5",
+    "crankshaft": "STEEL_4340",
+    "connecting_rod": "ALUMINUM_7075_T6",
+    "piston": "ALUMINUM_4032_T6",
+    "wrist_pin": "STEEL_4140_PREHARD",
+    "valve_intake": "STEEL_4140_PREHARD",
+    "valve_exhaust": "STEEL_4140_PREHARD",
+}
 
 
 @dataclass
@@ -325,18 +337,22 @@ class EngineAssembly:
 
     _, posed = self._pose_moving_parts(crank_angle_deg, self._base_moving_solids())
 
-    solids = [
-        head,
-        block,
-        liner,
-        posed["crank"],
-        posed["rod"],
-        posed["piston"],
-        posed["wrist_pin"],
-        posed["in_valve"],
-        posed["ex_valve"],
-    ]
-    return Compound(solids)
+    ordered_parts: Dict[str, Part] = {
+        "cylinder_head": head,
+        "cylinder_block": block,
+        "cylinder_liner": liner,
+        "crankshaft": posed["crank"],
+        "connecting_rod": posed["rod"],
+        "piston": posed["piston"],
+        "wrist_pin": posed["wrist_pin"],
+        "valve_intake": posed["in_valve"],
+        "valve_exhaust": posed["ex_valve"],
+    }
+    return style_named_parts_as_compound(
+        "engine_assembly",
+        ordered_parts,
+        MASTER_ASSEMBLY_MATERIALS.__getitem__,
+    )
 
 
 def generate_engine_assembly(crank_angle_deg: float = 0.0) -> Compound:
