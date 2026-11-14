@@ -18,9 +18,11 @@ import numpy as np
 if TYPE_CHECKING:
   from openengine.lubrication.thermal import SumpThermalBalanceResult
 
+from openengine.cad.cylinder_block import DEFAULT_BORE_M
 from openengine.cad.piston import generate_piston
 from openengine.fea.calculix import (
     ALUMINUM_4032_T6,
+    DOM_STEEL_A513_T5,
     FeaNodalResults,
     MaterialProperties,
     run_ccx_simulation,
@@ -37,14 +39,14 @@ from openengine.meshing.gmsh_structural import (
 class PistonFeaConfig:
   """Configuration parameters for piston FEA simulations."""
 
-  bore_m: float = 0.068
+  bore_m: float = DEFAULT_BORE_M
   peak_pressure_mpa: float = 7.80  # Peak gas pressure at firing TDC (7.8 MPa = 78 bar)
   crown_temp_c: float = 250.0  # Crown operating temperature in Celsius
   ring_land_temp_c: float = 190.0  # Ring belt operating temperature in Celsius
   skirt_temp_c: float = 140.0  # Skirt and pin boss operating temperature in Celsius
   liner_temp_c: float = 170.0  # Cylinder liner operating temperature (from CHT)
   ambient_temp_c: float = 20.0  # Cold assembly reference temperature
-  liner_thermal_expansion_coeff: float = 12.0e-6  # Cast iron sleeve expansion (1/K)
+  liner_thermal_expansion_coeff: float = DOM_STEEL_A513_T5.thermal_expansion_coeff  # DOM A513-T5 steel sleeve (1/K)
   cold_skirt_clearance_mm: float = 0.065  # 65 um nominal cold radial clearance
   mesh_size_min_mm: float = 2.5
   mesh_size_max_mm: float = 5.0
@@ -139,8 +141,11 @@ def generate_piston_mesh(
 
   # Crown face: top surface at z > 20 mm
   crown_filter = SurfaceFilter("NCROWN", lambda com, bbox: com[2] > 20.0)
-  # Pin bore: cylindrical contact area at z ~ -3 mm
-  pin_filter = SurfaceFilter("NPIN_BORE", lambda com, bbox: abs(com[2] - (-3.0)) < 2.0 and (bbox[3] - bbox[0]) < 25.0)
+  # Pin bore: cylindrical contact area at z ~ -3 mm (exclude outer circlip groove)
+  pin_filter = SurfaceFilter(
+      "NPIN_BORE",
+      lambda com, bbox: abs(com[2] - (-3.0)) < 2.0 and (bbox[3] - bbox[0]) < 16.5 and abs(com[1]) < 22.8,
+  )
   # Skirt outer contact surface: z < 10 mm, r ~ 34 mm
   skirt_filter = SurfaceFilter("NSKIRT", lambda com, bbox: com[2] < 10.0 and math.sqrt(com[0]**2 + com[1]**2) > 30.0)
 

@@ -20,10 +20,10 @@ def test_cht_config_defaults():
   cfg = ChtCoolingConfig()
   assert cfg.ambient_temp_k == 300.0
   assert cfg.liner_inner_temp_k == 443.0
-  assert cfg.fin_h_coeff == 75.0
-  assert cfg.thermal_conductivity == 160.0
+  assert cfg.fin_h_coeff == 105.0
+  assert cfg.thermal_conductivity == 167.0
   assert cfg.heat_budget_w == 1300.0
-  assert cfg.num_fins == 8
+  assert cfg.num_fins == 11
 
 
 def test_generate_finned_block_mesh():
@@ -76,7 +76,7 @@ def test_setup_cht_case():
     assert "refValue        uniform 295.0;" in t_txt
 
     tp_txt = (case_path / "constant" / "transportProperties").read_text()
-    assert "DT [0 2 -1 0 0 0 0] 6.58e-05;" in tp_txt
+    assert "DT [0 2 -1 0 0 0 0] 6.903e-05;" in tp_txt
 
 
 @pytest.mark.skipif(

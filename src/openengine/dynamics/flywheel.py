@@ -10,14 +10,20 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 import numpy as np
 
+from openengine.cad.covers_and_aux import (
+    FLYWHEEL_HUB_BORE_RADIUS_MM,
+    FLYWHEEL_OUTER_RADIUS_MM,
+)
+from openengine.fea.calculix import STEEL_1144_STRESSPROOF
+
 
 @dataclass
 class FlywheelDimensions:
   """Geometric and material boundaries for flywheel sizing."""
 
-  outer_radius_m: float = 0.085  # 170 mm outer diameter
-  inner_bore_radius_m: float = 0.020  # 40 mm crankshaft hub bore
-  density_kg_m3: float = 7850.0  # Ductile iron / forged steel
+  outer_radius_m: float = FLYWHEEL_OUTER_RADIUS_MM * 1.0e-3
+  inner_bore_radius_m: float = FLYWHEEL_HUB_BORE_RADIUS_MM * 1.0e-3
+  density_kg_m3: float = STEEL_1144_STRESSPROOF.density_tonne_mm3 * 1.0e12
   allowable_tensile_stress_mpa: float = 220.0  # Fatigue/yield tensile limit
 
 

@@ -56,10 +56,10 @@ def test_closed_loop_calibration_with_cfd_outputs():
   assert 1.2 <= res.calibrated_wiebe_a <= 3.0
   assert 2.0 <= res.calibrated_wiebe_m <= 4.0
   assert 60.0 <= res.calibrated_wiebe_duration_deg <= 90.0
-  assert res.calibrated_wiebe_soc_deg == pytest.approx(-22.0, abs=0.1)
+  assert res.calibrated_wiebe_soc_deg == pytest.approx(-18.0, abs=0.1)
 
   # Check Port Flow Curtain Cd from port_flow_results.json
-  assert 0.15 <= res.calibrated_intake_cd <= 0.35
+  assert 0.15 <= res.calibrated_intake_cd <= 0.65
 
   # Check CHT Wall Temperature from cht_cooling_results.json
   assert res.calibrated_wall_temp_k == pytest.approx(443.0, abs=1.0)

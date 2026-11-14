@@ -9,7 +9,7 @@ Re-simulates the thermodynamic cycle in Cantera / Woschni and quantifies the
 shift in indicated work, IMEP, power, torque, and thermal efficiency.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import time
@@ -17,6 +17,10 @@ from typing import Any, Dict, Optional, Union
 
 import numpy as np
 
+from openengine.cad.connecting_rod import DEFAULT_CENTER_TO_CENTER_M
+from openengine.cad.crankshaft import DEFAULT_STROKE_M
+from openengine.cad.cylinder_block import DEFAULT_BORE_M
+from openengine.cad.twin_metrics import get_cad_compression_ratio
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
 from openengine.thermo.gas_exchange import (
     FourStrokeSimulator,
@@ -32,10 +36,10 @@ class ClosedLoopConfig:
   combustion_results_path: Union[str, Path] = "outputs/cfd/combustion_results.json"
   port_flow_results_path: Union[str, Path] = "outputs/cfd/port_flow_results.json"
   cht_results_path: Union[str, Path] = "outputs/cfd/cht_cooling_results.json"
-  bore_m: float = 0.068
-  stroke_m: float = 0.054
-  con_rod_length_m: float = 0.108
-  compression_ratio: float = 9.80
+  bore_m: float = DEFAULT_BORE_M
+  stroke_m: float = DEFAULT_STROKE_M
+  con_rod_length_m: float = DEFAULT_CENTER_TO_CENTER_M
+  compression_ratio: float = field(default_factory=get_cad_compression_ratio)
   rated_rpm: float = 5500.0
 
   def __post_init__(self):
@@ -132,12 +136,12 @@ def run_closed_loop_calibration(
     with open(comb_path, "r") as f:
       comb_data = json.load(f)
     wiebe = comb_data.get("wiebe", {})
-    wiebe_a = float(wiebe.get("a", 1.681))
-    wiebe_m = float(wiebe.get("m", 2.941))
-    wiebe_dur = float(wiebe.get("duration_deg", 76.4))
-    wiebe_soc = float(wiebe.get("theta_soc_deg", -22.0))
+    wiebe_a = float(wiebe.get("a", 1.667))
+    wiebe_m = float(wiebe.get("m", 2.458))
+    wiebe_dur = float(wiebe.get("duration_deg", 76.65))
+    wiebe_soc = float(wiebe.get("theta_soc_deg", -18.0))
   else:
-    wiebe_a, wiebe_m, wiebe_dur, wiebe_soc = 1.681, 2.941, 76.4, -22.0
+    wiebe_a, wiebe_m, wiebe_dur, wiebe_soc = 1.667, 2.458, 76.65, -18.0
 
   port_path = Path(cfg.port_flow_results_path)
   if port_path.exists():

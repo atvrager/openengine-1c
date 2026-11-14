@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from typing import Optional, Tuple
 import numpy as np
+
+from openengine.cad.covers_and_aux import FLYWHEEL_OUTER_RADIUS_MM
+from openengine.cad.twin_metrics import get_cad_rotating_and_reciprocating_masses_kg
 from openengine.thermo.cycle import EngineGeometry
 
 
@@ -53,14 +56,20 @@ class SliderCrankDynamics:
   def __init__(
       self,
       geom: EngineGeometry,
-      reciprocating_mass_kg: float = 0.220,  # Piston + pin + rings + 1/3 rod
-      rotating_mass_kg: float = 0.280,  # Crankpin + 2/3 rod
-      counterweight_radius_m: float = 0.038,  # Typical cheek radius
-      flywheel_outer_radius_m: float = 0.085,  # 170 mm diameter flywheel
+      reciprocating_mass_kg: Optional[float] = None,
+      rotating_mass_kg: Optional[float] = None,
+      counterweight_radius_m: float = 0.038,
+      flywheel_outer_radius_m: float = FLYWHEEL_OUTER_RADIUS_MM * 1.0e-3,
   ):
     self.geom = geom
-    self.m_recip = reciprocating_mass_kg
-    self.m_rot = rotating_mass_kg
+    if reciprocating_mass_kg is None or rotating_mass_kg is None:
+      cad_rot_kg, cad_recip_kg = get_cad_rotating_and_reciprocating_masses_kg()
+      if reciprocating_mass_kg is None:
+        reciprocating_mass_kg = cad_recip_kg
+      if rotating_mass_kg is None:
+        rotating_mass_kg = cad_rot_kg
+    self.m_recip = float(reciprocating_mass_kg)
+    self.m_rot = float(rotating_mass_kg)
     self.r_cw = counterweight_radius_m
     self.r_fw = flywheel_outer_radius_m
 

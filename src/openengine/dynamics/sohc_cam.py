@@ -6,7 +6,7 @@ valvetrain shock loading. Evaluates follower dynamics, valve float safety margin
 and Hertzian contact stress.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
 import numpy as np
 
@@ -25,16 +25,30 @@ class CamLobeParams:
   lobe_width_m: float = 0.012  # Cam lobe contact face width (12 mm)
 
 
+def _default_intake_valve_mass_kg() -> float:
+  """Lazily resolve intake poppet valve mass from the live CAD twin."""
+  from openengine.cad.twin_metrics import get_cad_intake_valve_mass_kg
+
+  return get_cad_intake_valve_mass_kg()
+
+
+def _default_retainer_mass_kg() -> float:
+  """Lazily resolve spring retainer mass from the live CAD twin."""
+  from openengine.cad.twin_metrics import get_cad_retainer_mass_kg
+
+  return get_cad_retainer_mass_kg()
+
+
 @dataclass
 class ValvetrainMassSpring:
   """Mechanical parameters for valvetrain dynamics and spring sizing."""
 
-  valve_mass_kg: float = 0.022  # Lightweight titanium valve (22 g)
-  retainer_mass_kg: float = 0.005  # Titanium retainer + locks (5 g)
-  spring_mass_kg: float = 0.021  # Beehive valve spring (21 g)
-  rocker_inertia_equiv_kg: float = 0.008  # Aluminum roller rocker inertia at valve (8 g)
-  seat_force_preload_n: float = 320.0  # Installed seat force at 0 lift (320 N)
-  spring_rate_n_m: float = 62000.0  # Beehive spring stiffness k (62.0 N/mm)
+  valve_mass_kg: float = field(default_factory=_default_intake_valve_mass_kg)
+  retainer_mass_kg: float = field(default_factory=_default_retainer_mass_kg)
+  spring_mass_kg: float = 0.024  # McMaster 9573K35 chrome-silicon die spring (24 g)
+  rocker_inertia_equiv_kg: float = 0.008  # 7075-T6 roller rocker inertia at valve (8 g)
+  seat_force_preload_n: float = 450.0  # Installed seat force at 0 lift (450 N)
+  spring_rate_n_m: float = 78000.0  # 9573K35 die spring rate k (78.0 N/mm)
 
   @property
   def equivalent_valve_mass_kg(self) -> float:

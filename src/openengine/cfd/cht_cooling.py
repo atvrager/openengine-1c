@@ -8,6 +8,7 @@ dissipated while keeping cylinder liner temperatures below the scuffing limit (1
 
 from dataclasses import asdict, dataclass, replace
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,19 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 import gmsh
 import numpy as np
 
+from openengine.cad.cylinder_block import (
+    DEFAULT_BARREL_WALL_M,
+    DEFAULT_BLOCK_HEIGHT_M,
+    DEFAULT_BORE_M,
+    DEFAULT_FIN_DEPTH_Y_M,
+    DEFAULT_FIN_PITCH_M,
+    DEFAULT_FIN_THICKNESS_M,
+    DEFAULT_FIN_WIDTH_X_M,
+    DEFAULT_LINER_WALL_M,
+    DEFAULT_NUM_FINS,
+    THERMAL_BUDGET_W,
+)
+from openengine.fea.calculix import ALUMINUM_6061_T6
 from openengine.infra.podman import PodmanRunner
 
 if TYPE_CHECKING:
@@ -29,23 +43,26 @@ if TYPE_CHECKING:
 class ChtCoolingConfig:
   """Configuration parameters for cylinder block air-fin conjugate thermal simulation."""
 
-  airspeed_m_s: float = 11.11  # 40 km/h vehicle cruise speed
+  airspeed_m_s: float = 13.5  # Shrouded cooling fan + vehicle cruise airflow speed
   ambient_temp_k: float = 300.0  # 27 deg C ambient air temperature
   liner_inner_temp_k: float = 443.0  # 170 deg C peak inner liner boundary temperature
-  fin_h_coeff: float = 75.0  # W/(m2.K) forced convective heat transfer coefficient
-  thermal_conductivity: float = 160.0  # W/(m.K) thermal conductivity (A356-T6 aluminum)
-  thermal_diffusivity: float = 6.58e-05  # m2/s thermal diffusivity (k / rho*Cp)
-  heat_budget_w: float = 1300.0  # Target barrel heat rejection budget from combustion
-  bore_m: float = 0.068  # 68.0 mm cylinder bore
-  barrel_outer_radius_m: float = 0.043  # 43.0 mm barrel root radius (86 mm OD)
-  fin_outer_radius_m: float = 0.095  # 95.0 mm outer fin equivalent radius (~0.38 m2 area)
-  block_height_m: float = 0.085  # 85.0 mm deck height
-  num_fins: int = 8  # 8 cooling fins
-  fin_thickness_m: float = 0.0022  # 2.2 mm fin thickness
-  fin_pitch_m: float = 0.0075  # 7.5 mm fin center-to-center pitch
+  fin_h_coeff: float = 105.0  # W/(m2.K) shrouded forced convective heat transfer coefficient
+  thermal_conductivity: float = ALUMINUM_6061_T6.thermal_conductivity_w_mm_k * 1000.0
+  thermal_diffusivity: float = 6.903e-05  # m2/s thermal diffusivity (6061-T6 k / rho*Cp)
+  heat_budget_w: float = THERMAL_BUDGET_W
+  bore_m: float = DEFAULT_BORE_M
+  barrel_outer_radius_m: float = 0.5 * DEFAULT_BORE_M + DEFAULT_LINER_WALL_M + DEFAULT_BARREL_WALL_M
+  fin_outer_radius_m: float = round(
+      math.sqrt((DEFAULT_FIN_WIDTH_X_M * DEFAULT_FIN_DEPTH_Y_M) / math.pi),
+      4,
+  )
+  block_height_m: float = DEFAULT_BLOCK_HEIGHT_M
+  num_fins: int = DEFAULT_NUM_FINS
+  fin_thickness_m: float = DEFAULT_FIN_THICKNESS_M
+  fin_pitch_m: float = DEFAULT_FIN_PITCH_M
   mesh_size_min_m: float = 0.005  # 5 mm minimum tetrahedral element size
   mesh_size_max_m: float = 0.009  # 9 mm maximum tetrahedral element size
-  end_time_s: float = 20.0  # Pseudo-transient convergence end time
+  end_time_s: float = 45.0  # Pseudo-transient convergence end time
   delta_t_s: float = 0.5  # Time step size for thermal solver
   piston_splash_relief_w: float = 0.0  # Barrel heat relief from piston oil splash
 

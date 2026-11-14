@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
+from openengine.cad.cylinder_block import DEFAULT_BORE_M, HEAD_BOLT_XY_MM
 from openengine.fea.calculix import (
     STEEL_GRADE_10_9,
     FeaNodalResults,
@@ -34,13 +35,13 @@ from openengine.meshing.gmsh_structural import (
 class HeadGasketFeaConfig:
   """Configuration parameters for cylinder head bolt clamping and gasket sealing."""
 
-  num_bolts: int = 4
+  num_bolts: int = len(HEAD_BOLT_XY_MM)
   bolt_diameter_mm: float = 8.0  # M8 Grade 10.9 studs
   bolt_thread_pitch_mm: float = 1.25
   bolt_preload_kn: float = 22.0  # 22.0 kN per bolt (~32 N*m torque)
-  bore_m: float = 0.068
+  bore_m: float = DEFAULT_BORE_M
   peak_pressure_mpa: float = 7.80  # 78 bar peak combustion pressure
-  fire_ring_inner_radius_mm: float = 34.0  # At bore edge
+  fire_ring_inner_radius_mm: float = 0.5 * DEFAULT_BORE_M * 1000.0  # At bore edge
   fire_ring_width_mm: float = 2.5  # Radial fire-ring width
   fire_ring_load_fraction: float = 0.55  # Fraction of clamp force on fire-ring
   joint_stiffness_factor_phi: float = 0.18  # Bolt-to-joint stiffness ratio

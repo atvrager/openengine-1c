@@ -18,6 +18,8 @@ import numpy as np
 
 from openengine.cad.cylinder_head import (
     CylinderHeadParams,
+    VALVE_IN_X_MM,
+    VALVE_SEAT_Z_MM,
     extract_intake_port_fluid_domain,
     generate_poppet_valve,
 )
@@ -109,7 +111,7 @@ def generate_port_geometry_at_lift(
 
   slope = p.valve_angle_deg
   axis_dir = Vector(np.sin(np.radians(slope)), 0.0, np.cos(np.radians(slope)))
-  p_seat = Vector(16.0, 0.0, 6.0)
+  p_seat = Vector(VALVE_IN_X_MM, 0.0, VALVE_SEAT_Z_MM)
 
   # Valve opening moves down into the chamber (-axis_dir)
   pos = p_seat - axis_dir * lift_mm

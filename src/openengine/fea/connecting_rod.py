@@ -17,7 +17,13 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from openengine.cad.connecting_rod import generate_connecting_rod
+from openengine.cad.connecting_rod import (
+    DEFAULT_CENTER_TO_CENTER_M,
+    generate_connecting_rod,
+)
+from openengine.cad.crankshaft import DEFAULT_STROKE_M
+from openengine.cad.cylinder_block import DEFAULT_BORE_M
+from openengine.cad.twin_metrics import get_cad_reciprocating_mass_kg
 from openengine.fea.calculix import (
     ALUMINUM_7075_T6,
     FeaNodalResults,
@@ -35,10 +41,10 @@ from openengine.meshing.gmsh_structural import (
 class ConrodFeaConfig:
   """Configuration parameters for connecting rod FEA and fatigue assessment."""
 
-  center_to_center_m: float = 0.108
-  bore_m: float = 0.068
-  stroke_m: float = 0.054
-  reciprocating_mass_kg: float = 0.140  # Piston + pin + rings
+  center_to_center_m: float = DEFAULT_CENTER_TO_CENTER_M
+  bore_m: float = DEFAULT_BORE_M
+  stroke_m: float = DEFAULT_STROKE_M
+  reciprocating_mass_kg: float = field(default_factory=get_cad_reciprocating_mass_kg)
   peak_pressure_mpa: float = 7.80  # 78 bar peak cylinder pressure
   redline_rpm: float = 7000.0  # Max engine speed
   mesh_size_min_mm: float = 3.0

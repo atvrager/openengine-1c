@@ -103,7 +103,7 @@ def test_setup_combustion_case():
     # Check initial conditions directory matching startTime
     init_p = case_path / "-180" / "p"
     assert init_p.exists()
-    assert "uniform 100000.0;" in init_p.read_text()
+    assert "uniform 101325.0;" in init_p.read_text()
 
 
 def test_calibrate_wiebe_from_synthetic_trajectory():

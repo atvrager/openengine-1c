@@ -6,7 +6,7 @@ kinematics. Calibrates 0D/1D Wiebe combustion parameters directly against the
 resolved 3D mass fraction burned curve.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import os
 from pathlib import Path
@@ -20,6 +20,10 @@ import gmsh
 import numpy as np
 from scipy.optimize import curve_fit
 
+from openengine.cad.connecting_rod import DEFAULT_CENTER_TO_CENTER_M
+from openengine.cad.crankshaft import DEFAULT_STROKE_M
+from openengine.cad.cylinder_block import DEFAULT_BORE_M
+from openengine.cad.twin_metrics import get_cad_compression_ratio
 from openengine.infra.podman import PodmanRunner
 from openengine.thermo.cycle import wiebe_burned_fraction
 
@@ -28,20 +32,22 @@ from openengine.thermo.cycle import wiebe_burned_fraction
 class CombustionConfig:
   """Configuration parameters for 3D in-cylinder combustion simulation."""
 
-  bore_m: float = 0.068  # 68.0 mm cylinder bore
-  stroke_m: float = 0.054  # 54.0 mm piston stroke
-  con_rod_length_m: float = 0.108  # 108.0 mm connecting rod
-  compression_ratio: float = 9.80  # 9.80:1 nominal geometric compression ratio
+  bore_m: float = DEFAULT_BORE_M
+  stroke_m: float = DEFAULT_STROKE_M
+  con_rod_length_m: float = DEFAULT_CENTER_TO_CENTER_M
+  compression_ratio: float = field(default_factory=get_cad_compression_ratio)
   rated_rpm: float = 5500.0  # 5500 RPM rated operating speed
   start_crank_angle_deg: float = -180.0  # BDC start of compression stroke
-  end_crank_angle_deg: float = 5.0  # Crank angle to stop simulation (past TDC)
-  spark_crank_angle_deg: float = -22.0  # Ignition timing (-22 deg BTDC)
+  end_crank_angle_deg: float = 10.0  # Crank angle to stop simulation (past TDC)
+  spark_crank_angle_deg: float = -18.0  # DFM ignition timing (-18 deg BTDC)
   spark_duration_deg: float = 20.0  # Spark plasma kernel duration in CA degrees
+  spark_depth_m: float = 0.001  # Spark offset below cylinder head deck [m]
+  spark_diameter_m: float = 0.003  # Spark plasma kernel sphere diameter [m]
   mesh_size_min_m: float = 0.0035  # 3.5 mm minimum tetrahedral cell size
   mesh_size_max_m: float = 0.0050  # 5.0 mm maximum tetrahedral cell size
   max_co: float = 0.2  # Max Courant number for adaptive time-stepping
   max_delta_t_deg: float = 0.5  # Max allowable crank angle step size
-  initial_pressure_pa: float = 100000.0  # 1.0 bar cylinder intake pressure at BDC
+  initial_pressure_pa: float = 101325.0  # 1.0 atm cylinder intake pressure at BDC
   initial_temperature_k: float = 373.0  # 373 K initial gas charge temperature
 
 
@@ -256,7 +262,7 @@ def setup_combustion_case(
   # Calculate geometry
   clearance_m = compute_clearance_height(config.stroke_m, config.compression_ratio)
   head_z_m = clearance_m + config.stroke_m
-  spark_z_m = head_z_m - 0.001  # 1 mm below cylinder head deck inside fluid
+  spark_z_m = head_z_m - config.spark_depth_m
 
   rpm_str = str(int(config.rated_rpm) if config.rated_rpm.is_integer() else config.rated_rpm)
 
@@ -303,6 +309,11 @@ rpm             rpm [0 0 -1 0 0 0 0] {rpm_str};
   comb_txt = re.sub(
       r"location\s+\([^)]+\);",
       f"location        (0 0 {spark_z_m:.6f});",
+      comb_txt,
+  )
+  comb_txt = re.sub(
+      r"diameter\s+[-+]?[0-9]*\.?[0-9]+;",
+      f"diameter        {config.spark_diameter_m};",
       comb_txt,
   )
   comb_txt = re.sub(
@@ -469,7 +480,7 @@ def parse_combustion_stdout(
 def calibrate_wiebe_from_trajectory(
     crank_angles_deg: np.ndarray,
     combustion_progress: np.ndarray,
-    theta_spark_deg: float = -22.0,
+    theta_spark_deg: float = -18.0,
     a_fixed: Optional[float] = None,
 ) -> Optional[WiebeFitResult]:
   """Fit 0D Wiebe function parameters to 3D CFD combustion progress curve x_b(theta).
