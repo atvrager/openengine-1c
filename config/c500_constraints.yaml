@@ -1,0 +1,155 @@
+# NestWorks C500 Desktop CNC + 4th-Axis Rotary Hardware Constraints
+# Reference: docs/openengine_1c_dfm_plan.md Phase 3 & Section 4.2
+
+machine:
+  name: "NestWorks C500 Desktop CNC + 4th-Axis Rotary Module"
+  has_fourth_axis: true
+  spindle_power_w: 800.0
+  max_spindle_rpm: 18000.0
+  coolant_system: "mql_air_mist"
+  exposed_linear_rails: true
+
+work_envelope:
+  atc_xy_mm: [190.0, 210.0]
+  max_housing_xy_mm: [165.0, 185.0]
+  max_z_clearance_mm: 160.0
+  max_split_housing_z_mm: 55.0
+  max_four_side_barrel_z_mm: 130.0
+  rotary_chuck_od_mm: 100.0
+  rotary_max_length_mm: 175.0
+  max_rotary_part_od_mm: 95.0
+  max_rotary_part_length_mm: 165.0
+
+tooling:
+  max_tool_shank_mm: 6.35
+  max_single_side_pocket_depth_mm: 35.0
+  min_internal_corner_radius_mm: 1.6
+  thread_milling_only: true
+  min_thread_diameter_mm: 5.0
+  max_thread_diameter_mm: 20.0
+  supported_threads:
+    "M5x0.8": 0.8
+    "M6x1.0": 1.0
+    "M8x1.25": 1.25
+    "M10x1.0": 1.0
+    "M12x1.5": 1.5
+    "M16x1.5": 1.5
+    "M20x1.5": 1.5
+    "1/8-27 NPT": 0.941
+
+materials:
+  banned_materials:
+    - "GRAY_CAST_IRON"
+    - "DUCTILE_CAST_IRON"
+    - "COMPACTED_GRAPHITE_IRON"
+    - "CAST_IRON"
+  approved_materials:
+    - "ALUMINUM_6061_T6"
+    - "ALUMINUM_7075_T6"
+    - "ALUMINUM_4032_T6"
+    - "STEEL_1144_STRESSPROOF"
+    - "STEEL_4140_PREHARD"
+    - "STEEL_4340"
+    - "BRONZE_SAE_660"
+    - "DOM_STEEL_A513_T5"
+
+part_ledger:
+  poppet_valves:
+    module: "src/openengine/cad/cylinder_head.py"
+    mode: "rotary_4_axis"
+    fourth_axis_requirement: "required"
+    envelope_mm: [30.0, 30.0, 78.0]
+    material: "STEEL_4140_PREHARD"
+    pocket_depth_mm: 0.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "Buy COTS 5 mm stem valves (30 mm intake / 26 mm exhaust)."
+
+  one_piece_camshaft:
+    module: "src/openengine/cad/valvetrain_hardware.py"
+    mode: "rotary_4_axis"
+    fourth_axis_requirement: "required"
+    envelope_mm: [42.0, 42.0, 104.0]
+    material: "STEEL_4140_PREHARD"
+    pocket_depth_mm: 0.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "Mill flat 2.5D cam lobes and key/press onto ground shaft."
+
+  valve_guides_and_seats:
+    module: "src/openengine/cad/valvetrain_hardware.py"
+    mode: "rotary_4_axis"
+    fourth_axis_requirement: "required"
+    envelope_mm: [34.0, 34.0, 36.0]
+    material: "BRONZE_SAE_660"
+    pocket_depth_mm: 0.0
+    min_corner_radius_mm: 1.6
+    fallback_strategy: "Buy COTS guides/seats or ream 3-axis interpolated sleeves."
+
+  three_ring_piston:
+    module: "src/openengine/cad/piston.py"
+    mode: "rotary_4_axis"
+    fourth_axis_requirement: "strongly_preferred"
+    envelope_mm: [68.0, 68.0, 52.0]
+    material: "ALUMINUM_4032_T6"
+    pocket_depth_mm: 28.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "3-axis soft-jaw flip + 6.35 mm T-slot ring-groove cutter."
+
+  trigger_wheel_and_retainers:
+    module: "src/openengine/cad/covers_and_aux.py"
+    mode: "rotary_4_axis"
+    fourth_axis_requirement: "preferred"
+    envelope_mm: [76.0, 76.0, 18.0]
+    material: "STEEL_1144_STRESSPROOF"
+    pocket_depth_mm: 10.0
+    min_corner_radius_mm: 1.6
+    fallback_strategy: "3-axis two-sided dowel-pinned fixture plate ops."
+
+  cylinder_head:
+    module: "src/openengine/cad/cylinder_head.py"
+    mode: "three_axis_housing"
+    fourth_axis_requirement: "none"
+    envelope_mm: [130.0, 130.0, 52.0]
+    material: "ALUMINUM_6061_T6"
+    pocket_depth_mm: 32.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "Native 3-axis fixture plate + 15-deg sine block."
+
+  finned_cylinder_barrel:
+    module: "src/openengine/cad/cylinder_block.py"
+    mode: "three_axis_four_side_flip"
+    fourth_axis_requirement: "none"
+    envelope_mm: [120.0, 120.0, 92.0]
+    material: "ALUMINUM_6061_T6"
+    pocket_depth_mm: 24.0
+    min_corner_radius_mm: 1.6
+    fallback_strategy: "Native 3-axis 4-side flip around shrunk-in honed liner tube."
+
+  split_crankcase_and_sump_pan:
+    module: "src/openengine/cad/crankcase.py"
+    mode: "three_axis_housing"
+    fourth_axis_requirement: "none"
+    envelope_mm: [160.0, 178.0, 52.0]
+    material: "ALUMINUM_6061_T6"
+    pocket_depth_mm: 34.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "Native 3-axis two-sided 2.5D pocketing (split halves + 35 mm sump pan)."
+
+  split_connecting_rod:
+    module: "src/openengine/cad/connecting_rod.py"
+    mode: "three_axis_housing"
+    fourth_axis_requirement: "none"
+    envelope_mm: [152.0, 66.0, 22.0]
+    material: "ALUMINUM_7075_T6"
+    pocket_depth_mm: 11.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "Native 3-axis 2.5D pocketing + split cap + hand ream."
+
+  three_piece_crankshaft_webs:
+    module: "src/openengine/cad/crankshaft.py"
+    mode: "three_axis_housing"
+    fourth_axis_requirement: "none"
+    envelope_mm: [106.0, 96.0, 18.0]
+    material: "STEEL_1144_STRESSPROOF"
+    pocket_depth_mm: 18.0
+    min_corner_radius_mm: 2.0
+    fallback_strategy: "Native 3-axis 2.5D profile + arbor press onto ground 4140 pins."
