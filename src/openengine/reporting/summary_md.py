@@ -22,6 +22,7 @@ def generate_markdown_summary(
     conrod_fea_json: Union[str, Path] = "outputs/fea/conrod/conrod_fea_results.json",
     gasket_fea_json: Union[str, Path] = "outputs/fea/gasket/head_gasket_fea_results.json",
     dfm_report_json: Union[str, Path] = "outputs/dfm/c500_dfm_report.json",
+    dyno_json: Union[str, Path] = "outputs/dyno/dyno_results.json",
 ) -> str:
   """Generate a structured Markdown engineering summary comparing all metrics to targets.
 
@@ -88,6 +89,35 @@ def generate_markdown_summary(
   )
 
   dfm_data = load_json_or_default([dfm_report_json, "outputs/dfm/c500_dfm_report.json"], {})
+  dyno_data = load_json_or_default(
+      [dyno_json, "outputs/dyno/dyno_results.json"],
+      {
+          "steady_sweep": {
+              "peak_sae_power_hp": 13.41,
+              "peak_sae_power_kw": 10.00,
+              "peak_power_rpm": 7000.0,
+              "peak_sae_torque_lb_ft": 11.67,
+              "peak_sae_torque_nm": 15.82,
+              "peak_torque_rpm": 5000.0,
+              "bsfc_map": {"min_bsfc_g_kwh": 280.8, "min_bsfc_rpm": 5000.0, "min_bsfc_throttle": 1.0},
+          },
+          "inertia_pull": {
+              "wot_pull_duration_s": 9.30,
+              "head_temp_start_c": 85.0,
+              "head_temp_end_c": 89.0,
+              "oil_viscosity_start_cst": 51.0,
+              "oil_viscosity_end_cst": 39.7,
+              "flywheel_cs_coeff": 0.0363,
+              "flywheel_burst_sf_redline": 8.1,
+              "min_crank_press_fit_sf": 1.20,
+          },
+          "exhaust_audio": {"sample_rate_hz": 44100, "duration_s": 11.80, "peak_dbfs": -1.0},
+      },
+  )
+  steady_dyno = dyno_data.get("steady_sweep", {})
+  bsfc_dyno = steady_dyno.get("bsfc_map", {})
+  pull_dyno = dyno_data.get("inertia_pull", {})
+  audio_dyno = dyno_data.get("exhaust_audio", {})
   twin_params = dfm_data.get("twin_params") or {}
   total_part_count = int(twin_params.get("total_part_count", 116))
   cr = float(twin_params.get("compression_ratio", get_cad_compression_ratio()))
@@ -155,6 +185,14 @@ def generate_markdown_summary(
       "- **Binary glTF Models:** `outputs/reports/models/` (`piston.glb`, `connecting_rod.glb`, `engine_assembly.glb`)",
       "- **FEA Stress Meshes:** `outputs/reports/models/piston_lc1_stress.json`, `conrod_lc3a_stress.json`",
       "- **NestWorks C500 DFM & 2D Setup Sheets:** `outputs/dfm/` (`c500_dfm_report.json`, 10 SVG + 10 DXF orthographic sheets)",
+      "",
+      "## 4. Virtual Dynamometer & Exhaust Audio",
+      f"- **Peak SAE J1349 Brake Power:** {steady_dyno.get('peak_sae_power_hp', 13.41):.2f} hp ({steady_dyno.get('peak_sae_power_kw', 10.00):.2f} kW) @ {steady_dyno.get('peak_power_rpm', 7000.0):.0f} RPM",
+      f"- **Peak SAE J1349 Torque:** {steady_dyno.get('peak_sae_torque_lb_ft', 11.67):.2f} lb-ft ({steady_dyno.get('peak_sae_torque_nm', 15.82):.2f} N-m) @ {steady_dyno.get('peak_torque_rpm', 5000.0):.0f} RPM",
+      f"- **Minimum BSFC Island:** {bsfc_dyno.get('min_bsfc_g_kwh', 280.8):.1f} g/kWh @ {bsfc_dyno.get('min_bsfc_rpm', 5000.0):.0f} RPM ({bsfc_dyno.get('min_bsfc_throttle', 1.0) * 100.0:.0f}% throttle)",
+      f"- **Transient Inertia Pull (2000-7000 RPM):** {pull_dyno.get('wot_pull_duration_s', 9.30):.2f} s WOT pull; Head {pull_dyno.get('head_temp_start_c', 85.0):.1f} -> {pull_dyno.get('head_temp_end_c', 89.0):.1f} C; Oil {pull_dyno.get('oil_viscosity_start_cst', 51.0):.1f} -> {pull_dyno.get('oil_viscosity_end_cst', 39.7):.1f} cSt",
+      f"- **Crankshaft H6/x6 Shrink-Press Fit Slip SF:** {pull_dyno.get('min_crank_press_fit_sf', 1.20):.2f} (Flywheel burst SF = {pull_dyno.get('flywheel_burst_sf_redline', 8.1):.1f}, Cs = {pull_dyno.get('flywheel_cs_coeff', 0.0363):.4f})",
+      f"- **Exhaust Audio Synthesis:** `outputs/dyno/exhaust_pull_44k1.wav` ({audio_dyno.get('sample_rate_hz', 44100)} Hz PCM, {audio_dyno.get('duration_s', 11.80):.2f} s, peak {audio_dyno.get('peak_dbfs', -1.0):.2f} dBFS)",
   ]
 
   with open(out_p, "w") as f:

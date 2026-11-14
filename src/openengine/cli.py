@@ -83,6 +83,15 @@ from openengine.reporting import (
     generate_interactive_dashboard,
     generate_markdown_summary,
 )
+from openengine.dyno import (
+    DEFAULT_DRUM_INERTIA_KG_M2,
+    InertiaPullConfig,
+    SteadyDynoConfig,
+    build_live_twin_simulator,
+    run_inertia_dyno_pull,
+    run_steady_dyno_sweep,
+    synthesize_exhaust_audio,
+)
 from openengine.thermo.cantera_kinetics import FuelBlendSpec
 from openengine.thermo.cycle import ClosedCycleSimulator, EngineGeometry
 from openengine.thermo.gas_exchange import FourStrokeSimulator, ValveGeometry, ValveTiming
@@ -1369,6 +1378,56 @@ def fea_all(
     rich.print(f"[bold green]====================================================================[/bold green]")
 
 
+@app.command(name="dyno")
+def dyno(
+    config_path: str = "config/engine_specs.yaml",
+    output_dir: str = "outputs/dyno",
+    drum_inertia_kg_m2: float = DEFAULT_DRUM_INERTIA_KG_M2,
+):
+  """Run Phase 6 virtual brake dyno sweep, transient inertia pull, and 44.1 kHz exhaust audio."""
+  rich.print("[bold cyan]Running Virtual Brake Dynamometer & Exhaust Audio Cell...[/bold cyan]")
+  t0 = time.time()
+  out_p = Path(output_dir)
+  out_p.mkdir(parents=True, exist_ok=True)
+  cfg_p = Path(config_path)
+
+  sim = build_live_twin_simulator(config_path=cfg_p, use_live_twin=True)
+  steady_res = run_steady_dyno_sweep(SteadyDynoConfig(config_path=cfg_p, use_live_twin=True))
+  pull_res = run_inertia_dyno_pull(
+      steady_result=steady_res,
+      config=InertiaPullConfig(drum_inertia_kg_m2=drum_inertia_kg_m2),
+      sim=sim,
+  )
+  wav_path = out_p / "exhaust_pull_44k1.wav"
+  audio_res = synthesize_exhaust_audio(
+      pull_result=pull_res,
+      steady_result=steady_res,
+      output_wav_path=wav_path,
+  )
+
+  payload = {
+      "steady_sweep": steady_res.to_dict(),
+      "inertia_pull": pull_res.to_dict(),
+      "exhaust_audio": audio_res.to_dict(),
+  }
+  json_path = out_p / "dyno_results.json"
+  json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+  table = Table(title="Virtual Dynamometer & Acoustic Summary (SAE J1349)")
+  table.add_column("Metric", style="cyan")
+  table.add_column("Value", style="bold white")
+  table.add_row("Peak SAE Brake Power", f"{steady_res.peak_sae_power_hp:.2f} hp ({steady_res.peak_sae_power_kw:.2f} kW) @ {steady_res.peak_power_rpm:.0f} RPM")
+  table.add_row("Peak SAE Torque", f"{steady_res.peak_sae_torque_lb_ft:.2f} lb-ft ({steady_res.peak_sae_torque_nm:.2f} N-m) @ {steady_res.peak_torque_rpm:.0f} RPM")
+  table.add_row("Minimum BSFC Island", f"{steady_res.bsfc_map.min_bsfc_g_kwh:.1f} g/kWh @ {steady_res.bsfc_map.min_bsfc_rpm:.0f} RPM ({steady_res.bsfc_map.min_bsfc_throttle * 100.0:.0f}% throttle)")
+  table.add_row("Helmholtz / Exhaust Tuned RPM", f"{steady_res.helmholtz_tuned_rpm:.0f} / {steady_res.exhaust_scavenge_rpm:.0f} RPM")
+  table.add_row("WOT Pull Duration (2000-7000)", f"{pull_res.wot_pull_duration_s:.2f} s (Drum I={drum_inertia_kg_m2:.3f} kg*m^2)")
+  table.add_row("Head Temp & Oil Viscosity", f"Head {pull_res.head_temp_start_c:.1f} -> {pull_res.head_temp_end_c:.1f} C | Oil {pull_res.oil_viscosity_start_cst:.1f} -> {pull_res.oil_viscosity_end_cst:.1f} cSt")
+  table.add_row("Crank H6/x6 Press-Fit Slip SF", f"{pull_res.min_crank_press_fit_sf:.2f} ({'PASS' if pull_res.crank_press_fit_report.is_safe else 'FAIL'}) | Flywheel burst SF {pull_res.flywheel_burst_sf_redline:.1f}")
+  table.add_row("Exhaust Audio WAV", f"{wav_path} ({audio_res.duration_s:.2f} s @ {audio_res.sample_rate_hz} Hz, {audio_res.peak_dbfs:.2f} dBFS)")
+  rich.print(table)
+  rich.print(f"[bold green]Dyno results saved in {time.time() - t0:.2f} s to {json_path}[/bold green]")
+
+
 @app.command(name="report")
 def generate_report(
     output_dir: str = "outputs/reports",
@@ -1411,11 +1470,15 @@ def generate_report(
 
   # 3. Generate interactive HTML5 dashboard
   dfm_report_path = out_path.parent / "dfm" / "c500_dfm_report.json"
+  dyno_json_path = out_path.parent / "dyno" / "dyno_results.json"
+  dyno_wav_path = out_path.parent / "dyno" / "exhaust_pull_44k1.wav"
   html_path = out_path / "engineering_dashboard.html"
   generate_interactive_dashboard(
       output_html_path=html_path,
       models_dir=models_dir,
       dfm_report_json=dfm_report_path,
+      dyno_json=dyno_json_path,
+      dyno_wav=dyno_wav_path,
   )
 
   # 4. Generate Markdown summary
@@ -1423,6 +1486,7 @@ def generate_report(
   generate_markdown_summary(
       output_md_path=md_path,
       dfm_report_json=dfm_report_path,
+      dyno_json=dyno_json_path,
   )
 
   elapsed = time.time() - t0
@@ -1469,6 +1533,10 @@ def run_all(
   # Phase 4: Structural & Thermal FEA (CalculiX)
   rich.print("\n[bold yellow]>>> Step 4: Structural & Thermal FEA (CalculiX ccx)...[/bold yellow]")
   fea_all(output_dir=f"{output_dir}/fea")
+
+  # Phase 4B: Virtual Dynamometer & Exhaust Audio
+  rich.print("\n[bold yellow]>>> Step 4B: Virtual Brake Dynamometer & Exhaust Audio...[/bold yellow]")
+  dyno(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/dyno")
 
   # Phase 5: Synthesis, Interactive 3D WebGL Dashboard & Summary Report
   rich.print("\n[bold yellow]>>> Step 5: Interactive 3D Dashboard & Verification Reports...[/bold yellow]")
