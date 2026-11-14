@@ -27,12 +27,46 @@ from build123d import (
     export_step,
 )
 
-from openengine.cad.connecting_rod import generate_connecting_rod
-from openengine.cad.crankshaft import CrankshaftParams, generate_crankshaft
-from openengine.cad.cylinder_block import CylinderBlockParams, generate_cylinder_block, generate_cylinder_liner
-from openengine.cad.cylinder_head import CylinderHeadParams, generate_cylinder_head, generate_poppet_valve
+from openengine.cad.connecting_rod import DEFAULT_CENTER_TO_CENTER_M, generate_connecting_rod
+from openengine.cad.cots_parts import generate_wrist_pin_16x45
+from openengine.cad.crankshaft import CrankshaftParams, DEFAULT_STROKE_M, generate_crankshaft
+from openengine.cad.cylinder_block import (
+    CylinderBlockParams,
+    DEFAULT_BORE_M,
+    generate_cylinder_block,
+    generate_cylinder_liner,
+)
+from openengine.cad.cylinder_head import (
+    CylinderHeadParams,
+    DEFAULT_VALVE_HEAD_EX_M,
+    DEFAULT_VALVE_HEAD_IN_M,
+    generate_cylinder_head,
+    generate_poppet_valve,
+)
 from openengine.cad.piston import generate_piston
-from openengine.dynamics.sohc_cam import SOHCCamshaft
+
+MM_PER_M: float = 1000.0
+HALF_FACTOR: float = 0.5
+DEFAULT_CON_ROD_LENGTH_M: float = DEFAULT_CENTER_TO_CENTER_M
+DEFAULT_COMPRESSION_HEIGHT_M: float = 0.024
+VALVE_SEAT_Z_MM: float = 6.0
+VALVE_TILT_DEG: float = 15.0
+VALVE_X_OFFSET_MM: float = 16.0
+INTAKE_VALVE_DIAM_M: float = DEFAULT_VALVE_HEAD_IN_M
+EXHAUST_VALVE_DIAM_M: float = DEFAULT_VALVE_HEAD_EX_M
+LINER_BOTTOM_Z_MM: float = -105.0
+ROD_FLANGE_HALF_W_MM: float = 8.5
+DEFAULT_ROD_CLEARANCE_MM: float = 20.0
+TARGET_PV_CLEARANCE_MM: float = 1.50
+TARGET_ROD_CLEARANCE_MM: float = 5.00
+PISTON_PIN_OFFSET_Z_MM: float = 3.0
+ROT_90_DEG: float = 90.0
+FULL_CYCLE_DEG: float = 720.0
+DEFAULT_INTERFERENCE_STEP_DEG: float = 15.0
+DEFAULT_INTERFERENCE_VOL_TOL_MM3: float = 1.0e-3
+DEFAULT_SWEEP_STEP_DEG: float = 2.0
+SWEEP_INTERFERENCE_STEP_DEG: float = 30.0
+INIT_MIN_CLEARANCE_MM: float = 999.0
 
 
 @dataclass
@@ -74,20 +108,22 @@ class EngineAssembly:
 
   def __init__(
       self,
-      stroke_m: float = 0.054,
-      con_rod_length_m: float = 0.108,
-      compression_height_m: float = 0.024,
-      bore_m: float = 0.068,
-  ):
-    self.stroke_mm = stroke_m * 1000.0
-    self.r_mm = self.stroke_mm / 2.0  # 27 mm
-    self.l_rod_mm = con_rod_length_m * 1000.0  # 108 mm
-    self.comp_h_mm = compression_height_m * 1000.0  # 24 mm
-    self.bore_r_mm = (bore_m * 1000.0) / 2.0  # 34 mm
+      stroke_m: float = DEFAULT_STROKE_M,
+      con_rod_length_m: float = DEFAULT_CON_ROD_LENGTH_M,
+      compression_height_m: float = DEFAULT_COMPRESSION_HEIGHT_M,
+      bore_m: float = DEFAULT_BORE_M,
+  ) -> None:
+    self.stroke_mm = stroke_m * MM_PER_M
+    self.r_mm = self.stroke_mm * HALF_FACTOR  # 27 mm
+    self.l_rod_mm = con_rod_length_m * MM_PER_M  # 108 mm
+    self.comp_h_mm = compression_height_m * MM_PER_M  # 24 mm
+    self.bore_r_mm = (bore_m * MM_PER_M) * HALF_FACTOR  # 34 mm
     self.lam = self.r_mm / self.l_rod_mm  # 0.25
 
     # Main crankshaft axis located at Z = -159 mm so piston crown hits Z = 0 at TDC
     self.z_crank_main_mm = -(self.comp_h_mm + self.r_mm + self.l_rod_mm)  # -159 mm
+
+    from openengine.dynamics.sohc_cam import SOHCCamshaft
 
     self.cam = SOHCCamshaft()
 
@@ -110,27 +146,30 @@ class EngineAssembly:
 
     # Valve lifts from 4-5-6-7 polynomial cam profile
     th_arr = np.array([crank_angle_deg])
-    y_in_mm = float(self.cam.evaluate_valve_lift_crank_angle(self.cam.intake_params, th_arr)[0] * 1000.0)
-    y_ex_mm = float(self.cam.evaluate_valve_lift_crank_angle(self.cam.exhaust_params, th_arr)[0] * 1000.0)
+    y_in_mm = float(self.cam.evaluate_valve_lift_crank_angle(self.cam.intake_params, th_arr)[0] * MM_PER_M)
+    y_ex_mm = float(self.cam.evaluate_valve_lift_crank_angle(self.cam.exhaust_params, th_arr)[0] * MM_PER_M)
 
     # P-V Clearances: valve seats sit at Z = 6.0 mm, tilted at 15 deg
     # When open by lift y, valve head bottom face is at Z = 6.0 - y * cos(15)
-    z_in_valve_bottom = 6.0 - y_in_mm * np.cos(np.radians(15.0))
-    z_ex_valve_bottom = 6.0 - y_ex_mm * np.cos(np.radians(15.0))
+    z_in_valve_bottom = VALVE_SEAT_Z_MM - y_in_mm * np.cos(np.radians(VALVE_TILT_DEG))
+    z_ex_valve_bottom = VALVE_SEAT_Z_MM - y_ex_mm * np.cos(np.radians(VALVE_TILT_DEG))
 
     clr_in = z_in_valve_bottom - z_crown
     clr_ex = z_ex_valve_bottom - z_crown
 
-    # Rod-to-liner clearance at bottom of cylinder block (Z = -85 mm)
-    z_liner_bottom = -85.0
-    if z_pin < z_liner_bottom < z_wrist:
-      frac = (z_liner_bottom - z_wrist) / (z_pin - z_wrist)
+    # Rod-to-liner clearance at bottom of 105 mm DOM cylinder liner (Z = -105 mm)
+    if z_pin < LINER_BOTTOM_Z_MM < z_wrist:
+      frac = (LINER_BOTTOM_Z_MM - z_wrist) / (z_pin - z_wrist)
       x_rod = frac * x_pin
-      clr_rod = self.bore_r_mm - (abs(x_rod) + 8.0)  # 8 mm half-thickness of rod shank
+      clr_rod = self.bore_r_mm - (abs(x_rod) + ROD_FLANGE_HALF_W_MM)  # 8.5 mm half-width of 17 mm rod flange
     else:
-      clr_rod = 20.0
+      clr_rod = DEFAULT_ROD_CLEARANCE_MM
 
-    is_safe = (clr_in >= 1.5) and (clr_ex >= 1.5) and (clr_rod >= 5.0)
+    is_safe = (
+        (clr_in >= TARGET_PV_CLEARANCE_MM)
+        and (clr_ex >= TARGET_PV_CLEARANCE_MM)
+        and (clr_rod >= TARGET_ROD_CLEARANCE_MM)
+    )
 
     return EngineAssemblyState(
         crank_angle_deg=crank_angle_deg,
@@ -149,15 +188,13 @@ class EngineAssembly:
 
   def _base_moving_solids(self) -> Dict[str, Part]:
     """Generate canonical CAD solids once for reuse across assembly poses and interference sweeps."""
-    with BuildPart() as wp:
-      Cylinder(radius=8.0, height=48.0, rotation=(90.0, 0.0, 0.0))
     return {
         "crank": generate_crankshaft(),
-        "rod": generate_connecting_rod().rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0),
+        "rod": generate_connecting_rod().rotate(Axis.Z, ROT_90_DEG).rotate(Axis.Y, -ROT_90_DEG),
         "piston": generate_piston(),
-        "wrist_pin": wp.part,
-        "in_valve": generate_poppet_valve(head_diam_m=0.030),
-        "ex_valve": generate_poppet_valve(head_diam_m=0.026),
+        "wrist_pin": generate_wrist_pin_16x45(),
+        "in_valve": generate_poppet_valve(head_diam_m=INTAKE_VALVE_DIAM_M),
+        "ex_valve": generate_poppet_valve(head_diam_m=EXHAUST_VALVE_DIAM_M),
     }
 
   def _pose_moving_parts(
@@ -170,16 +207,20 @@ class EngineAssembly:
     crank = base["crank"].rotate(Axis.Y, crank_angle_deg).translate((0.0, 0.0, self.z_crank_main_mm))
     rod = base["rod"].rotate(Axis.Y, -st.con_rod_angle_deg).translate((0.0, 0.0, st.wrist_pin_z_mm))
     # Piston pin bore is at local Z = -3.0 mm; translate to align with z_wrist
-    piston = base["piston"].translate((0.0, 0.0, st.wrist_pin_z_mm + 3.0))
+    piston = base["piston"].translate((0.0, 0.0, st.wrist_pin_z_mm + PISTON_PIN_OFFSET_Z_MM))
     wrist_pin = base["wrist_pin"].translate((0.0, 0.0, st.wrist_pin_z_mm))
 
-    d_in_x = -st.intake_valve_lift_mm * np.sin(np.radians(15.0))
-    d_in_z = -st.intake_valve_lift_mm * np.cos(np.radians(15.0))
-    in_valve = base["in_valve"].rotate(Axis.Y, 15.0).translate((16.0 + d_in_x, 0.0, 6.0 + d_in_z))
+    d_in_x = -st.intake_valve_lift_mm * np.sin(np.radians(VALVE_TILT_DEG))
+    d_in_z = -st.intake_valve_lift_mm * np.cos(np.radians(VALVE_TILT_DEG))
+    in_valve = base["in_valve"].rotate(Axis.Y, VALVE_TILT_DEG).translate(
+        (VALVE_X_OFFSET_MM + d_in_x, 0.0, VALVE_SEAT_Z_MM + d_in_z)
+    )
 
-    d_ex_x = st.exhaust_valve_lift_mm * np.sin(np.radians(15.0))
-    d_ex_z = -st.exhaust_valve_lift_mm * np.cos(np.radians(15.0))
-    ex_valve = base["ex_valve"].rotate(Axis.Y, -15.0).translate((-16.0 + d_ex_x, 0.0, 6.0 + d_ex_z))
+    d_ex_x = st.exhaust_valve_lift_mm * np.sin(np.radians(VALVE_TILT_DEG))
+    d_ex_z = -st.exhaust_valve_lift_mm * np.cos(np.radians(VALVE_TILT_DEG))
+    ex_valve = base["ex_valve"].rotate(Axis.Y, -VALVE_TILT_DEG).translate(
+        (-VALVE_X_OFFSET_MM + d_ex_x, 0.0, VALVE_SEAT_Z_MM + d_ex_z)
+    )
 
     return st, {
         "crank": crank,
@@ -192,8 +233,8 @@ class EngineAssembly:
 
   def check_3d_interference(
       self,
-      step_deg: float = 15.0,
-      vol_tol_mm3: float = 1.0e-3,
+      step_deg: float = DEFAULT_INTERFERENCE_STEP_DEG,
+      vol_tol_mm3: float = DEFAULT_INTERFERENCE_VOL_TOL_MM3,
   ) -> List[str]:
     """Verify zero 3D B-Rep overlap across moving-component pairs over the 720-degree cycle."""
     base = self._base_moving_solids()
@@ -217,7 +258,7 @@ class EngineAssembly:
         ("piston", "ex_valve"),
     ]
 
-    for angle_deg in np.arange(0.0, 720.0, step_deg):
+    for angle_deg in np.arange(0.0, FULL_CYCLE_DEG, step_deg):
       _, posed = self._pose_moving_parts(float(angle_deg), base)
       parts = {**posed, "liner": liner}
       for name_a, name_b in pair_names:
@@ -230,17 +271,17 @@ class EngineAssembly:
 
   def sweep_clearances(
       self,
-      step_deg: float = 2.0,
-      interference_step_deg: float = 30.0,
+      step_deg: float = DEFAULT_SWEEP_STEP_DEG,
+      interference_step_deg: float = SWEEP_INTERFERENCE_STEP_DEG,
   ) -> ClearanceReport:
     """Evaluate analytical clearances and 3D B-Rep interference across the full 720-degree cycle."""
-    angles = np.arange(0.0, 720.0, step_deg)
+    angles = np.arange(0.0, FULL_CYCLE_DEG, step_deg)
 
-    min_in_clr = 999.0
+    min_in_clr = INIT_MIN_CLEARANCE_MM
     min_in_ang = 0.0
-    min_ex_clr = 999.0
+    min_ex_clr = INIT_MIN_CLEARANCE_MM
     min_ex_ang = 0.0
-    min_rod_clr = 999.0
+    min_rod_clr = INIT_MIN_CLEARANCE_MM
     min_rod_ang = 0.0
 
     for a in angles:
@@ -257,9 +298,9 @@ class EngineAssembly:
 
     interference_hits = self.check_3d_interference(step_deg=interference_step_deg)
     is_safe = (
-        (min_in_clr >= 1.50)
-        and (min_ex_clr >= 1.50)
-        and (min_rod_clr >= 5.00)
+        (min_in_clr >= TARGET_PV_CLEARANCE_MM)
+        and (min_ex_clr >= TARGET_PV_CLEARANCE_MM)
+        and (min_rod_clr >= TARGET_ROD_CLEARANCE_MM)
         and (len(interference_hits) == 0)
     )
 
@@ -270,8 +311,8 @@ class EngineAssembly:
         min_exhaust_pv_angle_deg=float(min_ex_ang),
         min_rod_to_liner_clearance_mm=float(min_rod_clr),
         min_rod_to_liner_angle_deg=float(min_rod_ang),
-        target_pv_clearance_mm=1.50,
-        target_rod_clearance_mm=5.00,
+        target_pv_clearance_mm=TARGET_PV_CLEARANCE_MM,
+        target_rod_clearance_mm=TARGET_ROD_CLEARANCE_MM,
         interference_hits=len(interference_hits),
         is_clearance_safe=is_safe,
     )

@@ -9,15 +9,15 @@ from openengine.cad.cylinder_block import (
 
 
 def test_cylinder_liner_solid():
-  """Verify cast iron cylinder liner sleeve dimensions, volume, and mass."""
+  """Verify honed DOM steel cylinder liner sleeve dimensions, volume, and mass."""
   liner = generate_cylinder_liner()
   assert liner.is_valid, "Cylinder liner solid is not a valid B-Rep"
   vol_cm3 = liner.volume / 1000.0
-  # 68 mm ID, 74 mm OD, 115 mm length -> theoretical vol ~ 76.95 cm3
-  assert 75.0 <= vol_cm3 <= 80.0
-  # Cast iron mass (7.2 g/cm3) ~ 554 g
-  mass_g = vol_cm3 * 7.2
-  assert 540.0 <= mass_g <= 570.0
+  # 68 mm ID, 74 mm OD, 105 mm length -> theoretical vol ~ 70.26 cm3
+  assert 68.0 <= vol_cm3 <= 73.0
+  # DOM steel mass (7.85 g/cm3) ~ 552 g
+  mass_g = vol_cm3 * 7.85
+  assert 535.0 <= mass_g <= 575.0
 
 
 def test_cylinder_block_solid():
