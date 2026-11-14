@@ -1,16 +1,51 @@
 """CalculiX ccx FEA input deck generator, runner, and .frd output parser."""
 
+from collections import Counter
 from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from openengine.infra.podman import PodmanRunner
+
+DEFAULT_CCX_PARALLEL: int = 8
+DEFAULT_CCX_OMP_THREADS: int = 2
+DEFAULT_BATCH_TIMEOUT_S: int = 600
+ONE_WORKER: int = 1
+BOUNDARY_FACE_COUNT: int = 1
+MIN_NODE_TOKENS: int = 4
+MIN_ELEM_TOKENS: int = 5
+NODE_IDX_ONE: int = 1
+NODE_IDX_TWO: int = 2
+NODE_IDX_THREE: int = 3
+NODE_IDX_FOUR: int = 4
+X_COORD_IDX: int = 1
+Y_COORD_IDX: int = 2
+Z_COORD_IDX: int = 3
+VON_MISES_SHEAR_COEFF: float = 6.0
+VON_MISES_HALF_COEFF: float = 0.5
+P95_PERCENTILE: int = 95
+FRD_NODE_SLICE: slice = slice(3, 13)
+FRD_FIELD_START: int = 13
+FRD_FIELD_WIDTH: int = 12
+FRD_DISP_COMPONENTS: int = 3
+FRD_STRESS_COMPONENTS: int = 6
+FRD_TEMP_COMPONENTS: int = 1
+FRD_BLOCK_PREFIXES: Tuple[Tuple[str, str], ...] = (
+    (" -4  DISP", "DISP"),
+    (" -4  STRESS", "STRESS"),
+    (" -4  TEMP", "TEMP"),
+    (" -4  NDTEMP", "TEMP"),
+)
+INP_SECTION_HEADERS: Mapping[str, str] = {
+    "*NODE": "node",
+    "*ELEMENT": "elem",
+}
 
 
 @dataclass
@@ -137,6 +172,54 @@ DOM_STEEL_A513_T5 = MaterialProperties(
     endurance_limit_mpa=275.0,
 )
 
+DIECAST_CARB_ALLOY = MaterialProperties(
+    name="DIECAST_CARB_ALLOY",
+    youngs_modulus_mpa=85000.0,
+    poissons_ratio=0.30,
+    density_tonne_mm3=6.60e-9,
+    thermal_expansion_coeff=27.0e-6,
+    thermal_conductivity_w_mm_k=0.113,
+    yield_strength_mpa=220.0,
+    ultimate_strength_mpa=280.0,
+    endurance_limit_mpa=85.0,
+)
+
+ALUMINA_STEEL_PLUG = MaterialProperties(
+    name="ALUMINA_STEEL_PLUG",
+    youngs_modulus_mpa=230000.0,
+    poissons_ratio=0.26,
+    density_tonne_mm3=5.40e-9,
+    thermal_expansion_coeff=8.5e-6,
+    thermal_conductivity_w_mm_k=0.028,
+    yield_strength_mpa=380.0,
+    ultimate_strength_mpa=480.0,
+    endurance_limit_mpa=160.0,
+)
+
+PHENOLIC_ELECTRONICS = MaterialProperties(
+    name="PHENOLIC_ELECTRONICS",
+    youngs_modulus_mpa=9500.0,
+    poissons_ratio=0.35,
+    density_tonne_mm3=1.65e-9,
+    thermal_expansion_coeff=32.0e-6,
+    thermal_conductivity_w_mm_k=0.00045,
+    yield_strength_mpa=75.0,
+    ultimate_strength_mpa=95.0,
+    endurance_limit_mpa=30.0,
+)
+
+VITON_FLUOROELASTOMER = MaterialProperties(
+    name="VITON_FLUOROELASTOMER",
+    youngs_modulus_mpa=18.0,
+    poissons_ratio=0.45,
+    density_tonne_mm3=1.85e-9,
+    thermal_expansion_coeff=160.0e-6,
+    thermal_conductivity_w_mm_k=0.00020,
+    yield_strength_mpa=12.0,
+    ultimate_strength_mpa=16.0,
+    endurance_limit_mpa=6.0,
+)
+
 MATERIAL_CATALOG: Dict[str, MaterialProperties] = {
     mat.name: mat
     for mat in (
@@ -149,6 +232,10 @@ MATERIAL_CATALOG: Dict[str, MaterialProperties] = {
         STEEL_4140_PREHARD,
         BRONZE_SAE_660,
         DOM_STEEL_A513_T5,
+        DIECAST_CARB_ALLOY,
+        ALUMINA_STEEL_PLUG,
+        PHENOLIC_ELECTRONICS,
+        VITON_FLUOROELASTOMER,
     )
 }
 
@@ -183,8 +270,8 @@ class FeaNodalResults:
 def compute_von_mises(sxx: float, syy: float, szz: float, sxy: float, syz: float, szx: float) -> float:
   """Calculate von Mises equivalent stress from 6 Cauchy stress components."""
   term1 = (sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2
-  term2 = 6.0 * (sxy**2 + syz**2 + szx**2)
-  return math.sqrt(0.5 * (term1 + term2))
+  term2 = VON_MISES_SHEAR_COEFF * (sxy**2 + syz**2 + szx**2)
+  return math.sqrt(VON_MISES_HALF_COEFF * (term1 + term2))
 
 
 def compute_principal_stresses(sxx: float, syy: float, szz: float, sxy: float, syz: float, szx: float) -> Tuple[float, float, float]:
@@ -199,6 +286,86 @@ def compute_principal_stresses(sxx: float, syy: float, szz: float, sxy: float, s
   roots = np.roots(coeffs)
   real_roots = sorted([float(r.real) for r in roots], reverse=True)
   return real_roots[0], real_roots[1], real_roots[2]
+
+
+def _detect_frd_block(line: str, current_block: Optional[str]) -> Tuple[Optional[str], bool]:
+  """Update active CalculiX FRD block state from header and terminator lines."""
+  for prefix, block_name in FRD_BLOCK_PREFIXES:
+    if line.startswith(prefix):
+      return block_name, True
+  if line.startswith(" -3"):
+    return None, True
+  return current_block, False
+
+
+def _parse_frd_floats(line: str, count: int) -> Tuple[float, ...]:
+  """Parse fixed-width CalculiX ASCII FRD float columns from a nodal result line."""
+  values: List[float] = []
+  for col in range(count):
+    start = FRD_FIELD_START + col * FRD_FIELD_WIDTH
+    end = start + FRD_FIELD_WIDTH
+    values.append(float(line[start:end].strip()))
+  return tuple(values)
+
+
+def _record_frd_nodal_line(
+    line: str,
+    current_block: str,
+    displacements: Dict[int, Tuple[float, float, float]],
+    stresses: Dict[int, Tuple[float, float, float, float, float, float]],
+    von_mises_map: Dict[int, float],
+    temperatures: Dict[int, float],
+) -> None:
+  """Parse one FRD ' -1' nodal record line into the corresponding output maps."""
+  try:
+    node_id = int(line[FRD_NODE_SLICE].strip())
+    if current_block == "DISP":
+      ux, uy, uz = _parse_frd_floats(line, FRD_DISP_COMPONENTS)
+      displacements[node_id] = (ux, uy, uz)
+    elif current_block == "STRESS":
+      sxx, syy, szz, sxy, syz, szx = _parse_frd_floats(line, FRD_STRESS_COMPONENTS)
+      stresses[node_id] = (sxx, syy, szz, sxy, syz, szx)
+      von_mises_map[node_id] = compute_von_mises(sxx, syy, szz, sxy, syz, szx)
+    elif current_block == "TEMP":
+      (temp_val,) = _parse_frd_floats(line, FRD_TEMP_COMPONENTS)
+      temperatures[node_id] = temp_val
+  except (ValueError, IndexError):
+    return
+
+
+def _summarize_frd_results(
+    displacements: Dict[int, Tuple[float, float, float]],
+    stresses: Dict[int, Tuple[float, float, float, float, float, float]],
+    von_mises_map: Dict[int, float],
+    temperatures: Dict[int, float],
+) -> FeaNodalResults:
+  """Aggregate displacement, von Mises, and principal stress metrics for parsed FRD maps."""
+  max_disp = 0.0
+  max_radial = 0.0
+  for ux, uy, uz in displacements.values():
+    max_disp = max(max_disp, math.sqrt(ux**2 + uy**2 + uz**2))
+    max_radial = max(max_radial, math.sqrt(ux**2 + uy**2))
+
+  vm_values = list(von_mises_map.values())
+  max_vm = max(vm_values) if vm_values else 0.0
+  mean_vm = float(np.mean(vm_values)) if vm_values else 0.0
+  p95_vm = float(np.percentile(vm_values, P95_PERCENTILE)) if vm_values else 0.0
+  p1_vals = [compute_principal_stresses(*s)[0] for s in stresses.values()]
+  max_p1 = max(p1_vals) if p1_vals else 0.0
+
+  return FeaNodalResults(
+      num_nodes=len(von_mises_map) or len(displacements),
+      displacements=displacements,
+      stresses=stresses,
+      von_mises_stresses=von_mises_map,
+      temperatures=temperatures,
+      max_disp_mm=max_disp,
+      max_radial_growth_mm=max_radial,
+      max_von_mises_mpa=max_vm,
+      p95_von_mises_mpa=p95_vm,
+      mean_von_mises_mpa=mean_vm,
+      max_principal_stress_mpa=max_p1,
+  )
 
 
 def parse_frd_results(frd_filepath: Union[str, Path]) -> FeaNodalResults:
@@ -218,89 +385,17 @@ def parse_frd_results(frd_filepath: Union[str, Path]) -> FeaNodalResults:
   stresses: Dict[int, Tuple[float, float, float, float, float, float]] = {}
   von_mises_map: Dict[int, float] = {}
   temperatures: Dict[int, float] = {}
-
   current_block: Optional[str] = None
-  in_block = False
 
   with open(frd_path, "r") as f:
     for line in f:
-      line_clean = line.strip()
-      if line.startswith(" -4  DISP"):
-        current_block = "DISP"
-        in_block = True
+      current_block, header_matched = _detect_frd_block(line, current_block)
+      if header_matched or current_block is None:
         continue
-      elif line.startswith(" -4  STRESS"):
-        current_block = "STRESS"
-        in_block = True
-        continue
-      elif line.startswith(" -4  TEMP") or line.startswith(" -4  NDTEMP"):
-        current_block = "TEMP"
-        in_block = True
-        continue
-      elif line.startswith(" -3"):
-        in_block = False
-        current_block = None
-        continue
+      if line.startswith(" -1"):
+        _record_frd_nodal_line(line, current_block, displacements, stresses, von_mises_map, temperatures)
 
-      if in_block and line.startswith(" -1"):
-        try:
-          node_id = int(line[3:13].strip())
-          if current_block == "DISP":
-            ux = float(line[13:25].strip())
-            uy = float(line[25:37].strip())
-            uz = float(line[37:49].strip())
-            displacements[node_id] = (ux, uy, uz)
-          elif current_block == "STRESS":
-            sxx = float(line[13:25].strip())
-            syy = float(line[25:37].strip())
-            szz = float(line[37:49].strip())
-            sxy = float(line[49:61].strip())
-            syz = float(line[61:73].strip())
-            szx = float(line[73:85].strip())
-            stresses[node_id] = (sxx, syy, szz, sxy, syz, szx)
-            vm = compute_von_mises(sxx, syy, szz, sxy, syz, szx)
-            von_mises_map[node_id] = vm
-          elif current_block == "TEMP":
-            temp_val = float(line[13:25].strip())
-            temperatures[node_id] = temp_val
-        except (ValueError, IndexError):
-          continue
-
-  # Calculate statistics
-  max_disp = 0.0
-  max_radial = 0.0
-  for nid, (ux, uy, uz) in displacements.items():
-    disp_mag = math.sqrt(ux**2 + uy**2 + uz**2)
-    radial_mag = math.sqrt(ux**2 + uy**2)
-    if disp_mag > max_disp:
-      max_disp = disp_mag
-    if radial_mag > max_radial:
-      max_radial = radial_mag
-
-  vm_values = list(von_mises_map.values())
-  max_vm = max(vm_values) if vm_values else 0.0
-  mean_vm = float(np.mean(vm_values)) if vm_values else 0.0
-  p95_vm = float(np.percentile(vm_values, 95)) if vm_values else 0.0
-
-  # Max principal stress
-  max_p1 = 0.0
-  if stresses:
-    p1_vals = [compute_principal_stresses(*s)[0] for s in stresses.values()]
-    max_p1 = max(p1_vals)
-
-  return FeaNodalResults(
-      num_nodes=len(von_mises_map) or len(displacements),
-      displacements=displacements,
-      stresses=stresses,
-      von_mises_stresses=von_mises_map,
-      temperatures=temperatures,
-      max_disp_mm=max_disp,
-      max_radial_growth_mm=max_radial,
-      max_von_mises_mpa=max_vm,
-      p95_von_mises_mpa=p95_vm,
-      mean_von_mises_mpa=mean_vm,
-      max_principal_stress_mpa=max_p1,
-  )
+  return _summarize_frd_results(displacements, stresses, von_mises_map, temperatures)
 
 
 def run_ccx_simulation(
@@ -335,3 +430,120 @@ def run_ccx_simulation(
     )
 
   return parse_frd_results(frd_file)
+
+
+def _build_ccx_batch_command(unique_jobs: Sequence[str], max_parallel: int) -> str:
+  """Construct one shell pipeline that runs CalculiX jobs in bounded parallel chunks."""
+  stride = max(ONE_WORKER, int(max_parallel))
+  chunks: List[str] = []
+  for start in range(0, len(unique_jobs), stride):
+    batch = unique_jobs[start : start + stride]
+    launches = [
+        f"OMP_NUM_THREADS={DEFAULT_CCX_OMP_THREADS} ccx -i {job} > {job}.ccx.log 2>&1 & p_{idx}=$!"
+        for idx, job in enumerate(batch)
+    ]
+    waits = [f"wait $p_{idx} || exit 1" for idx in range(len(batch))]
+    chunks.append("( " + "; ".join([*launches, *waits]) + " )")
+  return " && ".join(chunks)
+
+
+def run_ccx_batch(
+    job_names: Sequence[str],
+    case_dir: Union[str, Path],
+    runner: Optional[PodmanRunner] = None,
+    max_parallel: int = DEFAULT_CCX_PARALLEL,
+    timeout_sec: int = DEFAULT_BATCH_TIMEOUT_S,
+) -> Dict[str, FeaNodalResults]:
+  """Run multiple CalculiX ccx jobs inside one Podman invocation and parse .frd results."""
+  unique_jobs = list(dict.fromkeys(job_names))
+  if not unique_jobs:
+    return {}
+
+  c_dir = Path(case_dir).resolve()
+  for job in unique_jobs:
+    inp_file = c_dir / f"{job}.inp"
+    if not inp_file.exists():
+      raise FileNotFoundError(f"CalculiX input file not found: {inp_file}")
+
+  podman = runner or PodmanRunner()
+  cmd = _build_ccx_batch_command(unique_jobs, max_parallel)
+  podman.run_command(cmd, str(c_dir), timeout_sec=timeout_sec)
+
+  results: Dict[str, FeaNodalResults] = {}
+  for job in unique_jobs:
+    frd_file = c_dir / f"{job}.frd"
+    if not frd_file.exists() or frd_file.stat().st_size == 0:
+      raise RuntimeError(f"CalculiX ccx batch failed to produce valid output: {frd_file}")
+    results[job] = parse_frd_results(frd_file)
+  return results
+
+
+@dataclass(frozen=True, slots=True)
+class BoundaryMeshData:
+  """Parsed CalculiX node coordinates and outer triangular boundary mesh."""
+
+  node_coords: Dict[int, Tuple[float, float, float]]
+  boundary_triangles: Tuple[Tuple[int, int, int], ...]
+  unique_nodes: Tuple[int, ...]
+
+
+def boundary_triangles_from_tets(tets: List[Tuple[int, int, int, int]]) -> Tuple[Tuple[int, int, int], ...]:
+  """Extract outward-facing surface triangles appearing only once across tetrahedra."""
+  face_counts: Counter[Tuple[int, int, int]] = Counter()
+  face_orientations: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
+  for n0, n1, n2, n3 in tets:
+    for face in ((n0, n1, n2), (n0, n2, n3), (n0, n3, n1), (n1, n3, n2)):
+      sorted_vals = sorted(face)
+      key = (sorted_vals[0], sorted_vals[1], sorted_vals[2])
+      face_counts[key] += 1
+      face_orientations[key] = face
+  return tuple(face_orientations[k] for k, count in face_counts.items() if count == BOUNDARY_FACE_COUNT)
+
+
+def _resolve_inp_section(line: str) -> Optional[str]:
+  """Return updated parser section when encountering an INP keyword line, else None."""
+  if not line.startswith("*"):
+    return None
+  for prefix, sec in INP_SECTION_HEADERS.items():
+    if line.startswith(prefix):
+      return sec
+  return ""
+
+
+def _append_inp_record(
+    section: str,
+    line: str,
+    node_coords: Dict[int, Tuple[float, float, float]],
+    tets: List[Tuple[int, int, int, int]],
+) -> None:
+  """Decode a numeric node or element record into the active INP mesh buffers."""
+  if not line or not line[0].isdigit():
+    return
+  tokens = line.split(",")
+  if section == "node" and len(tokens) >= MIN_NODE_TOKENS:
+    node_coords[int(tokens[0])] = (float(tokens[X_COORD_IDX]), float(tokens[Y_COORD_IDX]), float(tokens[Z_COORD_IDX]))
+  elif section == "elem" and len(tokens) >= MIN_ELEM_TOKENS:
+    tets.append((int(tokens[NODE_IDX_ONE]), int(tokens[NODE_IDX_TWO]), int(tokens[NODE_IDX_THREE]), int(tokens[NODE_IDX_FOUR])))
+
+
+def parse_calculix_inp_mesh(inp_path: Union[str, Path]) -> BoundaryMeshData:
+  """Parse node coordinates and outer triangular boundary faces from a CalculiX .inp deck."""
+  node_coords: Dict[int, Tuple[float, float, float]] = {}
+  tets: List[Tuple[int, int, int, int]] = []
+  section = ""
+
+  for raw_line in Path(inp_path).read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    next_section = _resolve_inp_section(line)
+    if next_section is not None:
+      section = next_section
+      continue
+    _append_inp_record(section, line, node_coords, tets)
+
+  boundary_tris = boundary_triangles_from_tets(tets)
+  unique_nodes = tuple(sorted({nid for tri in boundary_tris for nid in tri}))
+  return BoundaryMeshData(
+      node_coords=node_coords,
+      boundary_triangles=boundary_tris,
+      unique_nodes=unique_nodes,
+  )
