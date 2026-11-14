@@ -1,86 +1,135 @@
 """CAD binary glTF (.glb) and FEA WebGL stress mesh exporters for interactive browser rendering."""
 
-from collections import Counter
-from dataclasses import asdict, dataclass
 import json
 import math
-import os
 from pathlib import Path
-import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-from build123d import Axis, Compound, Location, Part, export_gltf
+from build123d import Compound, Location, Part, Shape, export_gltf
 import numpy as np
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.TopLoc import TopLoc_Location
 
 from openengine.cad.assemblies import (
     build_dressed_engine_layer_groups,
+    build_dressed_engine_parts,
     generate_dressed_engine_assembly,
+    material_key_for_dressed_part,
+)
+from openengine.cad.assemblies.head_assembly import (
+    CAM_TO_CRANK_RATIO,
+    ROCKER_CONTACT_SCALE,
+    ROCKER_RATIO,
 )
 from openengine.cad.assembly import EngineAssembly, generate_engine_assembly
-from openengine.cad.connecting_rod import generate_connecting_rod
-from openengine.cad.cots_parts import generate_wrist_pin_16x45
-from openengine.cad.crankshaft import generate_crankshaft
-from openengine.cad.cylinder_block import (
-    generate_cylinder_block,
-    generate_cylinder_liner,
+from openengine.cad.step_export import style_named_parts_as_compound
+from openengine.cad.valvetrain_hardware import ROCKER_PIVOT_X_MM
+from openengine.fea.calculix import (
+    BoundaryMeshData,
+    boundary_triangles_from_tets as _boundary_triangles_from_tets,
+    parse_calculix_inp_mesh as _parse_calculix_inp_mesh,
+    parse_frd_results,
 )
-from openengine.cad.cylinder_head import (
-    generate_cylinder_head,
-    generate_poppet_valve,
+
+ZERO_VAL: float = 0.0
+UNIT_ONE: float = 1.0
+UPRIGHT_ROT_DEG: float = 90.0
+COLOR_Q1: float = 0.25
+COLOR_Q2: float = 0.50
+COLOR_Q3: float = 0.75
+COLOR_RED_DECAY: float = 1.2
+COLOR_ROUND_DIGITS: int = 3
+DEFLECTION_LINEAR_MM: float = 0.05
+DEFLECTION_ANGULAR_RAD: float = 0.2
+CYCLE_TOTAL_DEG: int = 720
+TRAJECTORY_STEP_DEG: int = 2
+TRAJECTORY_ROUND_DIGITS: int = 3
+COORD_ROUND_DIGITS: int = 3
+STRESS_ROUND_DIGITS: int = 1
+DISP_ROUND_DIGITS: int = 4
+SF_ROUND_DIGITS: int = 2
+MIN_STRESS_EPS_MPA: float = 0.1
+MIN_RANGE_EPS_MPA: float = 1.0
+P95_PERCENTILE: int = 95
+DEFAULT_YIELD_MPA: float = 315.0
+DEFAULT_DISP_SCALE: float = 1.0
+
+STATIC_SINGLE_PART_NAMES: Tuple[str, ...] = (
+    "cylinder_head",
+    "cylinder_block",
+    "cylinder_liner",
+    "wrist_pin",
+    "valve_intake",
+    "valve_exhaust",
+    "retainer_intake",
+    "retainer_exhaust",
+    "piston",
 )
-from openengine.cad.piston import generate_piston
-from openengine.fea.calculix import parse_frd_results
+
+COUPLED_SUBGROUPS: Mapping[str, Tuple[str, ...]] = {
+    "crankshaft": ("crankshaft",),
+    "crank_covers_spin": ("flywheel", "trigger_wheel"),
+    "crank_vt_spin": ("sprocket_crank_18t",),
+    "connecting_rod": ("conrod_beam", "conrod_cap"),
+    "conrod_cots": (
+        "needle_bearing_nks28",
+        "conrod_bolt_1",
+        "conrod_bolt_2",
+        "conrod_dowel_1",
+        "conrod_dowel_2",
+    ),
+    "piston_cots": ("top_ring", "second_ring", "oil_ring", "circlip_left", "circlip_right"),
+    "cam_vt_spin": ("camshaft", "ground_cam_core_shaft", "intake_lobe_2_5d", "exhaust_lobe_2_5d", "sprocket_cam_36t"),
+    "rocker_intake": ("rocker_intake",),
+    "rocker_exhaust": ("rocker_exhaust",),
+}
 
 
 def turbo_colormap(val: float) -> Tuple[float, float, float]:
-  """Polynomial approximation of the Turbo/Rainbow colormap for normalized val in [0, 1].
-
-  Smoothly transitions: Deep Blue -> Cyan -> Green -> Yellow -> Orange -> Deep Red.
-  """
-  x = max(0.0, min(1.0, val))
-  if x < 0.25:
-    f = x / 0.25
-    r, g, b = 0.0, f, 1.0
-  elif x < 0.50:
-    f = (x - 0.25) / 0.25
-    r, g, b = 0.0, 1.0, 1.0 - f
-  elif x < 0.75:
-    f = (x - 0.50) / 0.25
-    r, g, b = f, 1.0, 0.0
+  """Polynomial approximation of the Turbo/Rainbow colormap for normalized val in [0, 1]."""
+  x = max(ZERO_VAL, min(UNIT_ONE, val))
+  if x < COLOR_Q1:
+    r, g, b = ZERO_VAL, x / COLOR_Q1, UNIT_ONE
+  elif x < COLOR_Q2:
+    r, g, b = ZERO_VAL, UNIT_ONE, UNIT_ONE - ((x - COLOR_Q1) / COLOR_Q1)
+  elif x < COLOR_Q3:
+    r, g, b = (x - COLOR_Q2) / COLOR_Q1, UNIT_ONE, ZERO_VAL
   else:
-    f = (x - 0.75) / 0.25
-    r, g, b = 1.0, max(0.0, 1.0 - f * 1.2), 0.0
-  return round(r, 3), round(g, 3), round(b, 3)
+    frac = (x - COLOR_Q3) / COLOR_Q1
+    r, g, b = UNIT_ONE, max(ZERO_VAL, UNIT_ONE - (frac * COLOR_RED_DECAY)), ZERO_VAL
+  return (
+      round(r, COLOR_ROUND_DIGITS),
+      round(g, COLOR_ROUND_DIGITS),
+      round(b, COLOR_ROUND_DIGITS),
+  )
 
 
-def bake_shape(shape: Any) -> Part:
-  """Bake OpenCASCADE Location into vertex coordinates so exported glTF is strictly in assembly space."""
+def bake_shape(shape: Shape) -> Part:
+  """Bake OpenCASCADE Location into vertex coordinates in assembly space."""
+  if isinstance(shape, Compound) and not isinstance(shape, Part):
+    return Part(children=[bake_shape(sol) for sol in shape.solids()])
+  solids = list(shape.solids())
   loc = shape.wrapped.Location()
   if loc.IsIdentity():
-    return Part(shape.wrapped)
+    return Part(children=solids)
   trsf = loc.Transformation()
-  transformer = BRepBuilderAPI_Transform(shape.wrapped.Located(TopLoc_Location()), trsf, True)
-  return Part(transformer.Shape())
-
-
-def _bake_compound(shape: Any) -> Any:
-  """Bake Compound or Part vertices into world coordinates."""
-  if isinstance(shape, Compound):
-    return Compound(children=[bake_shape(sol) for sol in shape.solids()])
-  return bake_shape(shape)
+  baked_solids = [
+      Part(BRepBuilderAPI_Transform(sol.wrapped.Located(TopLoc_Location()), trsf, True).Shape())
+      for sol in solids
+  ]
+  return Part(children=baked_solids)
 
 
 def _export_glb_with_upright_frame(
-    shape: Any,
+    shape: Shape,
     glb_file: Path,
     linear_deflection: float,
     angular_deflection: float,
 ) -> str:
-  """Export CAD shape to binary glTF while preserving +Z up CAD assembly coordinates."""
-  # build123d.export_gltf internally applies -90 deg X rotation; counteract to keep +Z up.
-  shape.location = Location((0, 0, 0), (1, 0, 0), 90.0)
+  """Export styled CAD shape to binary glTF while preserving +Z up CAD assembly coordinates."""
+  # build123d.export_gltf applies -90 deg X internally; counteract on root node to keep +Z up.
+  original_loc = shape.location
+  shape.location = Location((ZERO_VAL, ZERO_VAL, ZERO_VAL), (UNIT_ONE, ZERO_VAL, ZERO_VAL), UPRIGHT_ROT_DEG) * original_loc
   export_gltf(
       shape,
       str(glb_file),
@@ -88,82 +137,105 @@ def _export_glb_with_upright_frame(
       linear_deflection=linear_deflection,
       angular_deflection=angular_deflection,
   )
+  shape.location = original_loc
   return str(glb_file)
+
+
+def _export_named_group(
+    group_name: str,
+    selected: Dict[str, Part],
+    out_path: Path,
+    linear_deflection: float,
+    angular_deflection: float,
+) -> str:
+  """Build a styled Compound for a named subset of parts and export it as binary glTF."""
+  styled = style_named_parts_as_compound(
+      group_name,
+      selected,
+      material_key_for_dressed_part,
+  )
+  return _export_glb_with_upright_frame(
+      styled,
+      out_path / f"{group_name}.glb",
+      linear_deflection,
+      angular_deflection,
+  )
+
+
+def _build_trajectory_frames(assembly: EngineAssembly) -> List[Dict[str, object]]:
+  """Sample 720-deg analytical kinematics including cam and rocker arm angles."""
+  frames: List[Dict[str, object]] = []
+  for th in range(0, CYCLE_TOTAL_DEG, TRAJECTORY_STEP_DEG):
+    st = assembly.solve_kinematics(float(th))
+    in_ratio = max(-UNIT_ONE, min(UNIT_ONE, (float(st.intake_valve_lift_mm) / ROCKER_RATIO) / ROCKER_PIVOT_X_MM))
+    ex_ratio = max(-UNIT_ONE, min(UNIT_ONE, (float(st.exhaust_valve_lift_mm) / ROCKER_RATIO) / ROCKER_PIVOT_X_MM))
+    alpha_in = math.degrees(math.asin(in_ratio)) * ROCKER_CONTACT_SCALE
+    alpha_ex = -math.degrees(math.asin(ex_ratio)) * ROCKER_CONTACT_SCALE
+    frames.append({
+        "crank_angle_deg": float(st.crank_angle_deg),
+        "cam_angle_deg": float(st.crank_angle_deg) * CAM_TO_CRANK_RATIO,
+        "crankpin_x_mm": round(float(st.crankpin_x_mm), TRAJECTORY_ROUND_DIGITS),
+        "crankpin_z_mm": round(float(st.crankpin_z_mm), TRAJECTORY_ROUND_DIGITS),
+        "con_rod_angle_deg": round(float(st.con_rod_angle_deg), TRAJECTORY_ROUND_DIGITS),
+        "wrist_pin_z_mm": round(float(st.wrist_pin_z_mm), TRAJECTORY_ROUND_DIGITS),
+        "piston_crown_z_mm": round(float(st.piston_crown_z_mm), TRAJECTORY_ROUND_DIGITS),
+        "intake_valve_lift_mm": round(float(st.intake_valve_lift_mm), TRAJECTORY_ROUND_DIGITS),
+        "exhaust_valve_lift_mm": round(float(st.exhaust_valve_lift_mm), TRAJECTORY_ROUND_DIGITS),
+        "rocker_intake_deg": round(alpha_in, TRAJECTORY_ROUND_DIGITS),
+        "rocker_exhaust_deg": round(alpha_ex, TRAJECTORY_ROUND_DIGITS),
+        "intake_pv_clearance_mm": round(float(st.intake_pv_clearance_mm), TRAJECTORY_ROUND_DIGITS),
+        "exhaust_pv_clearance_mm": round(float(st.exhaust_pv_clearance_mm), TRAJECTORY_ROUND_DIGITS),
+        "rod_to_liner_clearance_mm": round(float(st.rod_to_liner_clearance_mm), TRAJECTORY_ROUND_DIGITS),
+        "is_safe": bool(st.is_safe),
+    })
+  return frames
 
 
 def export_cad_models_to_gltf(
     output_dir: Union[str, Path] = "outputs/reports/models",
-    linear_deflection: float = 0.05,
-    angular_deflection: float = 0.2,
+    linear_deflection: float = DEFLECTION_LINEAR_MM,
+    angular_deflection: float = DEFLECTION_ANGULAR_RAD,
 ) -> Dict[str, str]:
-  """Export all engine CAD B-Rep solid models directly from the master assembly to binary glTF (.glb).
-
-  Args:
-    output_dir: Target directory for .glb files.
-    linear_deflection: Chordal deflection tolerance in mm for facet tessellation.
-    angular_deflection: Angular deflection tolerance in radians.
-
-  Returns:
-    Dictionary mapping component names to absolute .glb file paths.
-  """
+  """Export styled engine CAD B-Rep solids, layers, and kinematic trajectory to .glb/JSON."""
   out_path = Path(output_dir)
   out_path.mkdir(parents=True, exist_ok=True)
 
-  assembly = EngineAssembly()
-  st0 = assembly.solve_kinematics(0.0)
-
-  head = generate_cylinder_head()
-  block = generate_cylinder_block()
-  liner = generate_cylinder_liner()
-  crank = generate_crankshaft().translate((0.0, 0.0, assembly.z_crank_main_mm))
-  rod = generate_connecting_rod().rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0).translate((0.0, 0.0, st0.wrist_pin_z_mm))
-  piston = generate_piston().translate((0.0, 0.0, st0.wrist_pin_z_mm + 3.0))
-  wrist_pin = generate_wrist_pin_16x45().translate((0.0, 0.0, st0.wrist_pin_z_mm))
-  in_valve = generate_poppet_valve(head_diam_m=0.030).rotate(Axis.Y, 15.0).translate((16.0, 0.0, 6.0))
-  ex_valve = generate_poppet_valve(head_diam_m=0.026).rotate(Axis.Y, -15.0).translate((-16.0, 0.0, 6.0))
-
-  parts_to_bake = {
-      "cylinder_head": head,
-      "cylinder_block": block,
-      "cylinder_liner": liner,
-      "crankshaft": crank,
-      "connecting_rod": rod,
-      "piston": piston,
-      "wrist_pin": wrist_pin,
-      "valve_intake": in_valve,
-      "valve_exhaust": ex_valve,
-      **build_dressed_engine_layer_groups(0.0),
-  }
-
+  parts = build_dressed_engine_parts(crank_angle_deg=ZERO_VAL, has_fourth_axis=True, include_fluids=True)
   glb_paths: Dict[str, str] = {}
-  for name, shape in parts_to_bake.items():
-    glb_paths[name] = _export_glb_with_upright_frame(
-        _bake_compound(shape),
-        out_path / f"{name}.glb",
+
+  for part_name in STATIC_SINGLE_PART_NAMES:
+    if part_name in parts:
+      glb_paths[part_name] = _export_named_group(
+          part_name,
+          {part_name: parts[part_name]},
+          out_path,
+          linear_deflection,
+          angular_deflection,
+      )
+
+  for group_name, member_keys in COUPLED_SUBGROUPS.items():
+    selected = {key: parts[key] for key in member_keys if key in parts}
+    if selected:
+      glb_paths[group_name] = _export_named_group(
+          group_name,
+          selected,
+          out_path,
+          linear_deflection,
+          angular_deflection,
+      )
+
+  layer_groups = build_dressed_engine_layer_groups(crank_angle_deg=ZERO_VAL, has_fourth_axis=True, parts=parts)
+  for layer_name, compound in layer_groups.items():
+    glb_paths[layer_name] = _export_glb_with_upright_frame(
+        compound,
+        out_path / f"{layer_name}.glb",
         linear_deflection,
         angular_deflection,
     )
 
-  trajectory: List[Dict[str, Any]] = []
-  for th in range(0, 720, 2):
-    st = assembly.solve_kinematics(float(th))
-    trajectory.append({
-        "crank_angle_deg": float(st.crank_angle_deg),
-        "crankpin_x_mm": round(float(st.crankpin_x_mm), 3),
-        "crankpin_z_mm": round(float(st.crankpin_z_mm), 3),
-        "con_rod_angle_deg": round(float(st.con_rod_angle_deg), 3),
-        "wrist_pin_z_mm": round(float(st.wrist_pin_z_mm), 3),
-        "piston_crown_z_mm": round(float(st.piston_crown_z_mm), 3),
-        "intake_valve_lift_mm": round(float(st.intake_valve_lift_mm), 3),
-        "exhaust_valve_lift_mm": round(float(st.exhaust_valve_lift_mm), 3),
-        "intake_pv_clearance_mm": round(float(st.intake_pv_clearance_mm), 3),
-        "exhaust_pv_clearance_mm": round(float(st.exhaust_pv_clearance_mm), 3),
-        "rod_to_liner_clearance_mm": round(float(st.rod_to_liner_clearance_mm), 3),
-        "is_safe": bool(st.is_safe),
-    })
-
+  trajectory = _build_trajectory_frames(EngineAssembly())
   traj_file = out_path / "kinematic_trajectory.json"
-  traj_file.write_text(json.dumps(trajectory, indent=2))
+  traj_file.write_text(json.dumps(trajectory, indent=2), encoding="utf-8")
   glb_paths["kinematic_trajectory"] = str(traj_file)
 
   glb_paths["engine_assembly"] = _export_glb_with_upright_frame(
@@ -181,155 +253,88 @@ def export_cad_models_to_gltf(
   return glb_paths
 
 
+def _build_stress_vertex_buffers(
+    mesh: BoundaryMeshData,
+    displacements: Dict[int, Tuple[float, float, float]],
+    von_mises: Dict[int, float],
+    disp_scale: float,
+) -> Tuple[List[float], List[float], List[int], List[float], float, float, float]:
+  """Build compact Three.js vertex position, RGB Turbo color, and triangle index buffers."""
+  stresses = [von_mises.get(nid, ZERO_VAL) for nid in mesh.unique_nodes]
+  max_stress = max(stresses) if stresses else UNIT_ONE
+  min_stress = min(stresses) if stresses else ZERO_VAL
+  p95_stress = float(np.percentile(stresses, P95_PERCENTILE)) if stresses else max_stress
+  stress_range = max(MIN_RANGE_EPS_MPA, max_stress - min_stress)
+
+  node_to_idx = {nid: idx for idx, nid in enumerate(mesh.unique_nodes)}
+  positions: List[float] = []
+  colors: List[float] = []
+  nodal_stresses: List[float] = []
+
+  for nid in mesh.unique_nodes:
+    x0, y0, z0 = mesh.node_coords.get(nid, (ZERO_VAL, ZERO_VAL, ZERO_VAL))
+    ux, uy, uz = displacements.get(nid, (ZERO_VAL, ZERO_VAL, ZERO_VAL))
+    positions.extend([
+        round(x0 + (disp_scale * ux), COORD_ROUND_DIGITS),
+        round(y0 + (disp_scale * uy), COORD_ROUND_DIGITS),
+        round(z0 + (disp_scale * uz), COORD_ROUND_DIGITS),
+    ])
+    vm = von_mises.get(nid, ZERO_VAL)
+    nodal_stresses.append(round(vm, STRESS_ROUND_DIGITS))
+    r, g, b = turbo_colormap((vm - min_stress) / stress_range)
+    colors.extend([r, g, b])
+
+  indices: List[int] = []
+  for a, b, c in mesh.boundary_triangles:
+    indices.extend([node_to_idx[a], node_to_idx[b], node_to_idx[c]])
+
+  return positions, colors, indices, nodal_stresses, min_stress, max_stress, p95_stress
+
+
 def export_fea_stress_to_webgl(
     frd_path: Union[str, Path],
     inp_path: Union[str, Path],
     output_json_path: Union[str, Path],
     title: str = "FEA Stress Field",
     component_name: str = "Piston",
-    yield_strength_mpa: float = 315.0,
-    disp_scale: float = 1.0,
+    yield_strength_mpa: float = DEFAULT_YIELD_MPA,
+    disp_scale: float = DEFAULT_DISP_SCALE,
 ) -> Dict[str, Any]:
-  """Extract surface boundary mesh with nodal von Mises stresses and color maps for Three.js.
-
-  1. Parses CalculiX .frd file for nodal displacements and von Mises stresses.
-  2. Parses CalculiX / Gmsh .inp file for 3D coordinates and element connectivity.
-  3. Extracts outward-facing boundary surface triangles from the 3D tetrahedral mesh.
-  4. Maps von Mises stress to Turbo colormap RGB vertex colors.
-  5. Serializes to a compact Three.js BufferGeometry JSON structure.
-
-  Args:
-    frd_path: Path to CalculiX .frd results file.
-    inp_path: Path to mesh .inp deck.
-    output_json_path: Target JSON filepath for Three.js viewer.
-    title: Human-readable load case title.
-    component_name: Name of part (e.g. 'Piston', 'Connecting Rod').
-    yield_strength_mpa: Material yield strength in MPa for safety factor calculation.
-    disp_scale: Magnification scale factor for displacement deformation.
-
-  Returns:
-    Dictionary containing mesh summary and serialized payload.
-  """
+  """Extract boundary surface mesh with nodal von Mises stresses and color maps for Three.js."""
   out_json = Path(output_json_path)
   out_json.parent.mkdir(parents=True, exist_ok=True)
 
-  # 1. Parse FEA results
   fea_res = parse_frd_results(frd_path)
+  mesh = _parse_calculix_inp_mesh(inp_path)
+  positions, colors, indices, nodal_stresses, min_s, max_s, p95_s = _build_stress_vertex_buffers(
+      mesh=mesh,
+      displacements=fea_res.displacements,
+      von_mises=fea_res.von_mises_stresses,
+      disp_scale=disp_scale,
+  )
 
-  # 2. Parse nodes and element tets from .inp
-  node_coords: Dict[int, Tuple[float, float, float]] = {}
-  tets: List[List[int]] = []
-
-  in_nodes = False
-  in_elements = False
-  with open(inp_path, "r") as f:
-    for line in f:
-      line_strip = line.strip()
-      if line_strip.startswith("*NODE"):
-        in_nodes = True
-        in_elements = False
-        continue
-      elif line_strip.startswith("*ELEMENT"):
-        in_nodes = False
-        in_elements = True
-        continue
-      elif line_strip.startswith("*") and not line_strip.startswith("*ELEMENT"):
-        in_nodes = False
-        in_elements = False
-        continue
-
-      if in_nodes:
-        parts = [p.strip() for p in line_strip.split(",") if p.strip()]
-        if len(parts) >= 4 and parts[0].isdigit():
-          node_coords[int(parts[0])] = (float(parts[1]), float(parts[2]), float(parts[3]))
-      elif in_elements:
-        parts = [p.strip() for p in line_strip.split(",") if p.strip()]
-        if len(parts) >= 5 and parts[0].isdigit():
-          # First 4 vertex corner nodes of tetrahedral element
-          tets.append([int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])])
-
-  # 3. Extract boundary surface triangular faces
-  face_counts = Counter()
-  face_orientations: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
-
-  for tet in tets:
-    # 4 faces of tetrahedron
-    tet_faces = [
-        (tet[0], tet[1], tet[2]),
-        (tet[0], tet[2], tet[3]),
-        (tet[0], tet[3], tet[1]),
-        (tet[1], tet[3], tet[2]),
-    ]
-    for face in tet_faces:
-      key = tuple(sorted(face))
-      face_counts[key] += 1
-      face_orientations[key] = face
-
-  boundary_triangles = [face_orientations[k] for k, count in face_counts.items() if count == 1]
-
-  # 4. Map unique boundary nodes to compact 0-based indices
-  unique_boundary_nodes = sorted(list({nid for tri in boundary_triangles for nid in tri}))
-  node_id_to_idx = {nid: idx for idx, nid in enumerate(unique_boundary_nodes)}
-
-  # Stress normalization range
-  stresses = [fea_res.von_mises_stresses.get(nid, 0.0) for nid in unique_boundary_nodes]
-  max_stress = max(stresses) if stresses else 1.0
-  min_stress = min(stresses) if stresses else 0.0
-  p95_stress = float(np.percentile(stresses, 95)) if stresses else max_stress
-  stress_range = max(1.0, max_stress - min_stress)
-
-  # Build vertex arrays for Three.js BufferGeometry
-  # positions: [x0, y0, z0, x1, y1, z1, ...]
-  # colors: [r0, g0, b0, r1, g1, b1, ...]
-  # indices: [f0_a, f0_b, f0_c, f1_a, f1_b, f1_c, ...]
-  positions: List[float] = []
-  colors: List[float] = []
-  nodal_stress_vals: List[float] = []
-
-  for nid in unique_boundary_nodes:
-    x0, y0, z0 = node_coords.get(nid, (0.0, 0.0, 0.0))
-    ux, uy, uz = fea_res.displacements.get(nid, (0.0, 0.0, 0.0))
-    # Apply scaled displacement
-    x_def = x0 + disp_scale * ux
-    y_def = y0 + disp_scale * uy
-    z_def = z0 + disp_scale * uz
-    positions.extend([round(x_def, 3), round(y_def, 3), round(z_def, 3)])
-
-    vm = fea_res.von_mises_stresses.get(nid, 0.0)
-    nodal_stress_vals.append(round(vm, 1))
-    norm_val = (vm - min_stress) / stress_range
-    r, g, b = turbo_colormap(norm_val)
-    colors.extend([r, g, b])
-
-  indices: List[int] = []
-  for tri in boundary_triangles:
-    indices.extend([node_id_to_idx[tri[0]], node_id_to_idx[tri[1]], node_id_to_idx[tri[2]]])
-
-  sf_yield = yield_strength_mpa / max(0.1, p95_stress)
-
+  sf_yield = yield_strength_mpa / max(MIN_STRESS_EPS_MPA, p95_s)
+  metadata: Dict[str, Union[str, int, float]] = {
+      "title": title,
+      "component": component_name,
+      "num_vertices": len(mesh.unique_nodes),
+      "num_triangles": len(mesh.boundary_triangles),
+      "min_stress_mpa": round(min_s, STRESS_ROUND_DIGITS),
+      "max_stress_mpa": round(max_s, STRESS_ROUND_DIGITS),
+      "p95_stress_mpa": round(p95_s, STRESS_ROUND_DIGITS),
+      "yield_strength_mpa": round(yield_strength_mpa, STRESS_ROUND_DIGITS),
+      "yield_safety_factor": round(sf_yield, SF_ROUND_DIGITS),
+      "max_displacement_mm": round(fea_res.max_disp_mm, DISP_ROUND_DIGITS),
+      "disp_scale": disp_scale,
+  }
   payload = {
-      "metadata": {
-          "title": title,
-          "component": component_name,
-          "num_vertices": len(unique_boundary_nodes),
-          "num_triangles": len(boundary_triangles),
-          "min_stress_mpa": round(min_stress, 1),
-          "max_stress_mpa": round(max_stress, 1),
-          "p95_stress_mpa": round(p95_stress, 1),
-          "yield_strength_mpa": round(yield_strength_mpa, 1),
-          "yield_safety_factor": round(sf_yield, 2),
-          "max_displacement_mm": round(fea_res.max_disp_mm, 4),
-          "disp_scale": disp_scale,
-      },
+      "metadata": metadata,
       "geometry": {
           "positions": positions,
           "colors": colors,
           "indices": indices,
-          "stresses": nodal_stress_vals,
+          "stresses": nodal_stresses,
       },
   }
-
-  with open(out_json, "w") as f:
-    json.dump(payload, f)
-
-  return payload["metadata"]
+  out_json.write_text(json.dumps(payload), encoding="utf-8")
+  return dict(metadata)

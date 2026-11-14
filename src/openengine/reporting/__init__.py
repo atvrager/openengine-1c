@@ -1,4 +1,4 @@
-"""Post-processing, interactive 3D WebGL dashboards, and multi-physics verification reports."""
+"""Post-processing, interactive 3D WebGL dashboards, GitHub Pages bundler, and reports."""
 
 from openengine.reporting.dashboard import (
     generate_interactive_dashboard,
@@ -9,9 +9,15 @@ from openengine.reporting.gltf_export import (
     export_fea_stress_to_webgl,
     turbo_colormap,
 )
+from openengine.reporting.pages import (
+    PagesSiteManifest,
+    build_pages_site,
+)
 from openengine.reporting.summary_md import generate_markdown_summary
 
 __all__ = [
+    "PagesSiteManifest",
+    "build_pages_site",
     "export_cad_models_to_gltf",
     "export_fea_stress_to_webgl",
     "generate_interactive_dashboard",

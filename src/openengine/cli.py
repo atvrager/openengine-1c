@@ -70,6 +70,12 @@ from openengine.fea import (
     run_head_gasket_fea,
     run_piston_fea,
 )
+from openengine.fea.assembly_atlas import (
+    MIN_YIELD_SF_GATE,
+    FeaAtlasSummaryResult,
+    export_fea_atlas_to_webgl,
+    run_fea_atlas,
+)
 from openengine.infra.podman import PodmanRunner
 from openengine.lubrication import (
     OilGradeSpec,
@@ -78,6 +84,7 @@ from openengine.lubrication import (
     solve_sump_thermal_balance,
 )
 from openengine.reporting import (
+    build_pages_site,
     export_cad_models_to_gltf,
     export_fea_stress_to_webgl,
     generate_interactive_dashboard,
@@ -284,6 +291,7 @@ def lub(
     config_path: str = "config/engine_specs.yaml",
     rpm: float = 0.0,
     oil_grade: str = "",
+    output_dir: str = "outputs/lubrication",
 ):
   """Run wet-sump splash lubrication, 4-zone FMEP, and sump thermal balance."""
   cfg = load_config(config_path)
@@ -440,6 +448,79 @@ def lub(
   )
   therm_table.add_row("Overall Thermal & Transport Safe", str(tb.is_thermal_safe))
   rich.print(therm_table)
+
+  lub_out_dir = Path(output_dir)
+  lub_out_dir.mkdir(parents=True, exist_ok=True)
+  thermo_lub_payload = {
+      "rpm": float(target_rpm),
+      "fuel": dict(cfg.get("fuel", {})),
+      "cycle": {
+          "imep_bar": float(res.gimep_pa / 1.0e5),
+          "nimep_bar": float(res.nimep_pa / 1.0e5),
+          "fmep_bar": float(res.fmep_pa / 1.0e5),
+          "bmep_bar": float(res.bmep_pa / 1.0e5),
+          "indicated_power_kw": float(res.power_kw),
+          "brake_power_kw": float(res.brake_power_kw),
+          "brake_power_hp": float(res.brake_power_kw * 1.34102209),
+          "brake_torque_nm": float(res.brake_torque_nm),
+          "mechanical_efficiency": float(res.mechanical_efficiency),
+          "isfc_g_kwh": float(res.bsfc_g_kwh * res.mechanical_efficiency),
+          "bsfc_g_kwh": float(res.bsfc_g_kwh),
+          "p_max_bar": float(res.pressure_pa.max() / 1.0e5),
+          "t_max_k": float(res.temperature_k.max()),
+          "end_gas_temp_max_k": float(res.end_gas_temp_max_k),
+          "knock_integral": float(res.knock_integral),
+          "knock_margin": float(res.knock_margin),
+          "is_knocking": bool(res.is_knocking),
+          "knock_onset_deg": None if res.knock_onset_deg is None else float(res.knock_onset_deg),
+      },
+      "friction_zones": {
+          "ring_skirt_fmep_bar": float(fric.ring_skirt_fmep_pa / 1.0e5),
+          "ring_skirt_heat_w": float(fric.ring_skirt_heat_w),
+          "rolling_bearings_fmep_bar": float(fric.rolling_bearings_fmep_pa / 1.0e5),
+          "rolling_bearings_heat_w": float(fric.rolling_bearings_heat_w),
+          "valvetrain_fmep_bar": float(fric.valvetrain_fmep_pa / 1.0e5),
+          "valvetrain_heat_w": float(fric.valvetrain_heat_w),
+          "dipper_windage_fmep_bar": float(fric.dipper_windage_fmep_pa / 1.0e5),
+          "dipper_windage_heat_w": float(fric.dipper_windage_heat_w),
+          "total_fmep_bar": float(fric.total_fmep_bar),
+          "total_friction_power_w": float(fric.total_friction_power_w),
+          "friction_torque_nm": float(fric.friction_torque_nm),
+      },
+      "splash": {
+          "oil_grade": spec.grade,
+          "static_pool_depth_mm": float(splash.static_pool_depth_mm),
+          "static_immersion_mm": float(splash.static_immersion_mm),
+          "dynamic_immersion_mm": float(splash.dynamic_immersion_mm),
+          "oil_in_flight_ml": float(splash.oil_in_flight_l * 1000.0),
+          "dynamic_level_drop_mm": float(splash.dynamic_level_drop_mm),
+          "tip_throw_velocity_m_s": float(splash.tip_throw_velocity_m_s),
+          "droplet_apex_height_m": float(splash.droplet_apex_height_m),
+          "reaches_piston_undercrown": bool(splash.reaches_piston_undercrown),
+          "chain_oil_carry_g_s": float(splash.chain_oil_carry_g_s),
+          "tunnel_drain_capacity_g_s": float(splash.tunnel_drain_capacity_g_s),
+          "drain_safety_ratio": float(splash.drain_safety_ratio),
+      },
+      "thermal": {
+          "equilibrium_oil_temp_c": float(tb.equilibrium_oil_temp_c),
+          "max_allowable_oil_temp_c": float(tb.max_allowable_oil_temp_c),
+          "oil_temp_margin_c": float(tb.oil_temp_margin_c),
+          "total_oil_heat_load_w": float(tb.total_oil_heat_load_w),
+          "friction_heat_to_oil_w": float(tb.friction_heat_to_oil_w),
+          "piston_splash_heat_w": float(tb.piston_splash_heat_w),
+          "crankcase_conduction_w": float(tb.crankcase_conduction_w),
+          "sump_overall_ua_w_k": float(tb.sump_overall_ua_w_k),
+          "undercrown_htc_w_m2_k": float(tb.undercrown_htc_w_m2_k),
+          "cooled_piston_crown_temp_c": float(tb.cooled_piston_crown_temp_c),
+          "cooled_piston_ring_land_temp_c": float(tb.cooled_piston_ring_land_temp_c),
+          "cooled_piston_skirt_temp_c": float(tb.cooled_piston_skirt_temp_c),
+          "adjusted_barrel_heat_budget_w": float(tb.adjusted_barrel_heat_budget_w),
+          "is_thermal_safe": bool(tb.is_thermal_safe),
+      },
+  }
+  lub_json_path = lub_out_dir / "thermo_lub_results.json"
+  lub_json_path.write_text(json.dumps(thermo_lub_payload, indent=2), encoding="utf-8")
+  rich.print(f"[bold green]Lubrication & knock JSON saved to {lub_json_path}[/bold green]")
 
 
 @app.command()
@@ -1339,18 +1420,96 @@ def fea_gasket(
   return res
 
 
+@app.command(name="fea-atlas")
+def fea_atlas(
+    output_dir: str = "outputs/fea/atlas",
+    models_json: str = "outputs/reports/models/fea_stress_atlas.json",
+    force_rebuild: bool = False,
+    strict: bool = True,
+) -> FeaAtlasSummaryResult:
+  """Run CalculiX C3D10 structural FEA across all 114 CAD solids and 5 multi-body assemblies."""
+  rich.print("[cyan]Running Full-Engine CalculiX C3D10 FEA Stress Atlas (All Parts & Assemblies)...[/cyan]")
+  res = run_fea_atlas(output_dir=output_dir, force_rebuild=force_rebuild)
+  export_fea_atlas_to_webgl(
+      fea_root_dir=Path(output_dir).parent,
+      output_json_path=models_json,
+      force_rebuild=False,
+  )
+
+  table = Table(
+      title="Full-Engine CalculiX C3D10 Stress Atlas (Assemblies & Governing Limits)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  table.add_column("Assembly / Scope", style="magenta")
+  table.add_column("Solids", style="cyan")
+  table.add_column("P95 Stress", style="bold green")
+  table.add_column("Min Yield SF", style="bold green")
+  table.add_column("Governing Part", style="yellow")
+  table.add_column("Status", style="cyan")
+
+  for asm in res.assemblies:
+    table.add_row(
+        asm.title,
+        str(asm.part_count),
+        f"{asm.p95_stress_mpa:.1f} MPa",
+        f"{asm.min_yield_safety_factor:.2f}",
+        asm.limiting_part_key,
+        _status_badge(asm.is_pass),
+    )
+
+  rich.print(table)
+  rich.print(
+      f"[bold green]FEA Atlas complete ({res.unique_meshes} unique C3D10 meshes / {res.total_solids} solids, "
+      f"min SF={res.min_yield_safety_factor:.2f} >= {MIN_YIELD_SF_GATE:.2f} @ {res.limiting_part_key}, "
+      f"{res.total_solve_time_s:.2f} s)[/bold green]"
+  )
+  rich.print(f"[bold green]Exported WebGL stress atlas to: {models_json}[/bold green]")
+
+  if not res.all_passed:
+    rich.print("[bold red]FAILED: Full-Engine FEA Stress Atlas did NOT pass all yield safety gates![/bold red]")
+    if strict:
+      raise typer.Exit(code=1)
+
+  return res
+
+
+def _print_fea_suite_failures(
+    piston_res: object,
+    conrod_res: object,
+    gasket_res: object,
+    atlas_res: FeaAtlasSummaryResult,
+) -> None:
+  """Print concise diagnostic failures for Phase 4 FEA suite checks."""
+  rich.print("\n[bold red]====================================================================[/bold red]")
+  rich.print("[bold red]  FAILED: Phase 4 FEA Suite Did NOT Pass All Acceptance Targets!    [/bold red]")
+  if not piston_res.is_structural_safe:
+    rich.print(f"[bold red]  - Piston LC-1 Yield SF = {piston_res.lc1_mechanical.yield_safety_factor:.2f} (Target >= 1.60)[/bold red]")
+  if not conrod_res.is_structural_safe:
+    rich.print("[bold red]  - Connecting Rod structural criteria NOT met[/bold red]")
+  if not (gasket_res.is_sealing_safe and gasket_res.is_bolt_safe):
+    rich.print("[bold red]  - Cylinder head gasket sealing / bolt preload criteria NOT met[/bold red]")
+  if not atlas_res.all_passed:
+    rich.print(
+        f"[bold red]  - Full-Engine FEA Atlas min SF = {atlas_res.min_yield_safety_factor:.2f} "
+        f"({atlas_res.limiting_part_key})[/bold red]"
+    )
+  rich.print("[bold red]====================================================================[/bold red]")
+
+
 @app.command(name="fea-all")
 def fea_all(
     output_dir: str = "outputs/fea",
     strict: bool = True,
-):
-  """Run the complete Phase 4 Structural & Thermal FEA suite (Piston, Connecting Rod, Gasket)."""
+) -> None:
+  """Run the complete Phase 4 Structural & Thermal FEA suite (Piston, Connecting Rod, Gasket, Atlas)."""
   rich.print("[bold cyan]Executing Complete Phase 4 Structural & Thermal FEA Suite...[/bold cyan]")
   t0 = time.time()
 
   piston_res = fea_piston(output_dir=f"{output_dir}/piston", strict=False)
   conrod_res = fea_conrod(output_dir=f"{output_dir}/conrod", strict=False)
   gasket_res = fea_gasket(output_dir=f"{output_dir}/gasket", strict=False)
+  atlas_res = run_fea_atlas(output_dir=f"{output_dir}/atlas", force_rebuild=False)
 
   elapsed = time.time() - t0
   all_ok = (
@@ -1358,24 +1517,17 @@ def fea_all(
       and conrod_res.is_structural_safe
       and gasket_res.is_sealing_safe
       and gasket_res.is_bolt_safe
+      and atlas_res.all_passed
   )
 
   if not all_ok:
-    rich.print(f"\n[bold red]====================================================================[/bold red]")
-    rich.print(f"[bold red]  FAILED: Phase 4 FEA Suite Did NOT Pass All Acceptance Targets!    [/bold red]")
-    if not piston_res.is_structural_safe:
-      rich.print(f"[bold red]  - Piston LC-1 Yield SF = {piston_res.lc1_mechanical.yield_safety_factor:.2f} (Target >= 1.60)[/bold red]")
-    if not conrod_res.is_structural_safe:
-      rich.print(f"[bold red]  - Connecting Rod structural criteria NOT met[/bold red]")
-    if not (gasket_res.is_sealing_safe and gasket_res.is_bolt_safe):
-      rich.print(f"[bold red]  - Cylinder head gasket sealing / bolt preload criteria NOT met[/bold red]")
-    rich.print(f"[bold red]====================================================================[/bold red]")
+    _print_fea_suite_failures(piston_res, conrod_res, gasket_res, atlas_res)
     if strict:
       raise typer.Exit(code=1)
   else:
-    rich.print(f"\n[bold green]====================================================================[/bold green]")
+    rich.print("\n[bold green]====================================================================[/bold green]")
     rich.print(f"[bold green]  Complete Phase 4 FEA Suite PASSED in {elapsed:.2f} s!             [/bold green]")
-    rich.print(f"[bold green]====================================================================[/bold green]")
+    rich.print("[bold green]====================================================================[/bold green]")
 
 
 @app.command(name="dyno")
@@ -1444,8 +1596,9 @@ def generate_report(
   export_cad_models_to_gltf(models_dir)
 
   # 2. Export FEA stress meshes for Three.js
-  piston_frd = Path("outputs/fea/piston/piston_lc1.frd")
-  piston_inp = Path("outputs/fea/piston/piston_mesh.inp")
+  base_outputs = out_path.parent
+  piston_frd = base_outputs / "fea" / "piston" / "piston_lc1.frd"
+  piston_inp = base_outputs / "fea" / "piston" / "piston_mesh.inp"
   if piston_frd.exists() and piston_inp.exists():
     export_fea_stress_to_webgl(
         frd_path=piston_frd,
@@ -1453,11 +1606,11 @@ def generate_report(
         output_json_path=models_dir / "piston_lc1_stress.json",
         title="Piston LC-1 Firing TDC Peak Pressure",
         component_name="Piston",
-        yield_strength_mpa=315.0,
+        yield_strength_mpa=ALUMINUM_4032_T6.yield_strength_mpa,
     )
 
-  conrod_frd = Path("outputs/fea/conrod/conrod_lc3a.frd")
-  conrod_inp = Path("outputs/fea/conrod/conrod_mesh.inp")
+  conrod_frd = base_outputs / "fea" / "conrod" / "conrod_lc3a.frd"
+  conrod_inp = base_outputs / "fea" / "conrod" / "conrod_mesh.inp"
   if conrod_frd.exists() and conrod_inp.exists():
     export_fea_stress_to_webgl(
         frd_path=conrod_frd,
@@ -1468,31 +1621,82 @@ def generate_report(
         yield_strength_mpa=ALUMINUM_7075_T6.yield_strength_mpa,
     )
 
+  fea_atlas_json_path = base_outputs / "fea" / "atlas" / "fea_atlas_results.json"
+  if (base_outputs / "fea" / "atlas" / "cases").exists() or fea_atlas_json_path.exists():
+    export_fea_atlas_to_webgl(
+        fea_root_dir=base_outputs / "fea",
+        output_json_path=models_dir / "fea_stress_atlas.json",
+        force_rebuild=False,
+    )
+
   # 3. Generate interactive HTML5 dashboard
-  dfm_report_path = out_path.parent / "dfm" / "c500_dfm_report.json"
-  dyno_json_path = out_path.parent / "dyno" / "dyno_results.json"
-  dyno_wav_path = out_path.parent / "dyno" / "exhaust_pull_44k1.wav"
+  cht_json_path = base_outputs / "cfd" / "cht_cooling_results.json"
+  closed_loop_path = base_outputs / "calibration" / "closed_loop_results.json"
+  piston_fea_path = base_outputs / "fea" / "piston" / "piston_fea_results.json"
+  conrod_fea_path = base_outputs / "fea" / "conrod" / "conrod_fea_results.json"
+  gasket_fea_path = base_outputs / "fea" / "gasket" / "head_gasket_fea_results.json"
+  dfm_report_path = base_outputs / "dfm" / "c500_dfm_report.json"
+  setup_sheets_path = base_outputs / "dfm" / "drawings" / "setup_sheets_manifest.json"
+  bom_json_path = base_outputs / "bom" / "bom_summary.json"
+  thermo_lub_path = base_outputs / "lubrication" / "thermo_lub_results.json"
+  dyno_json_path = base_outputs / "dyno" / "dyno_results.json"
+  dyno_wav_path = base_outputs / "dyno" / "exhaust_pull_44k1.wav"
   html_path = out_path / "engineering_dashboard.html"
   generate_interactive_dashboard(
       output_html_path=html_path,
       models_dir=models_dir,
+      cht_json=cht_json_path,
+      closed_loop_json=closed_loop_path,
+      piston_fea_json=piston_fea_path,
+      conrod_fea_json=conrod_fea_path,
+      gasket_fea_json=gasket_fea_path,
+      fea_atlas_json=fea_atlas_json_path,
       dfm_report_json=dfm_report_path,
       dyno_json=dyno_json_path,
       dyno_wav=dyno_wav_path,
+      bom_json=bom_json_path,
+      thermo_lub_json=thermo_lub_path,
+      setup_sheets_json=setup_sheets_path,
   )
 
   # 4. Generate Markdown summary
   md_path = out_path / "summary.md"
   generate_markdown_summary(
       output_md_path=md_path,
+      cht_json=cht_json_path,
+      closed_loop_json=closed_loop_path,
+      piston_fea_json=piston_fea_path,
+      conrod_fea_json=conrod_fea_path,
+      gasket_fea_json=gasket_fea_path,
+      fea_atlas_json=fea_atlas_json_path,
       dfm_report_json=dfm_report_path,
       dyno_json=dyno_json_path,
+      bom_json=bom_json_path,
+      thermo_lub_json=thermo_lub_path,
+      setup_sheets_json=setup_sheets_path,
   )
 
   elapsed = time.time() - t0
   rich.print(f"[bold green]Report generation completed in {elapsed:.2f} s![/bold green]")
   rich.print(f"[bold green]Interactive 3D Dashboard: {html_path}[/bold green]")
   rich.print(f"[bold green]Markdown Verification Summary: {md_path}[/bold green]")
+
+
+@app.command(name="build-pages")
+def build_pages(
+    outputs_dir: str = "outputs",
+    site_dir: str = "_site",
+):
+  """Assemble self-contained static GitHub Pages bundle and verify all local asset links."""
+  manifest = build_pages_site(outputs_dir=outputs_dir, site_dir=site_dir)
+  table = Table(title="GitHub Pages Static Site Bundle")
+  table.add_column("Field", style="cyan")
+  table.add_column("Value", style="bold green")
+  table.add_row("Output Site Directory", manifest.site_dir)
+  table.add_row("Entrypoint Index HTML", manifest.index_html)
+  table.add_row("Bundled Asset Files", str(manifest.copied_file_count))
+  table.add_row("Verified Relative Links", str(len(manifest.verified_links)))
+  rich.print(table)
 
 
 @app.command(name="run-all")
@@ -1510,7 +1714,7 @@ def run_all(
   # Phase 1: 0D Thermo, Lubrication & Valvetrain Dynamics + C500 BoM
   rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics, Lubrication, Dynamics & C500 BoM...[/bold yellow]")
   thermo(config_path="config/engine_specs.yaml")
-  lub(config_path="config/engine_specs.yaml")
+  lub(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/lubrication")
   valvetrain(config_path="config/engine_specs.yaml")
   dynamics(config_path="config/engine_specs.yaml")
   bom(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/bom", fourth_axis=None)

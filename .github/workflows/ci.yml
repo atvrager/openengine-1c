@@ -66,26 +66,24 @@ jobs:
         with:
           name: openengine-1c-artifacts
           path: |
+            outputs/bom/*
             outputs/cad/*.step
             outputs/cfd/*.json
             outputs/calibration/*.json
+            outputs/dfm/*.json
+            outputs/dfm/drawings/*
+            outputs/dyno/*
             outputs/fea/**/*.json
             outputs/fea/**/*.inp
             outputs/fea/**/*.frd
+            outputs/lubrication/*.json
             outputs/reports/engineering_dashboard.html
             outputs/reports/summary.md
             outputs/reports/models/*
           if-no-files-found: error
 
-      - name: Prepare GitHub Pages site
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          mkdir -p _site
-          cp outputs/reports/engineering_dashboard.html _site/index.html
-          cp outputs/reports/engineering_dashboard.html _site/engineering_dashboard.html
-          cp outputs/reports/summary.md _site/summary.md
-          cp -r outputs/reports/models _site/models
-          cp -r outputs/cad _site/cad
+      - name: Build and verify GitHub Pages site bundle
+        run: uv run openengine build-pages --outputs-dir outputs --site-dir _site
 
       - name: Upload GitHub Pages artifact
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
