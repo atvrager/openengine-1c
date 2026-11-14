@@ -186,8 +186,8 @@ PART_SETUP_SPECS: Tuple[PartSetupSpec, ...] = (
         is_rotary_dependent=False,
         datum_callout="G54 main shaft bore axis (Z = -159 mm engine frame)",
         thread_callout="Thread mill: M8x1.25 flywheel/sprocket nose retain taps",
-        tolerance_callout="28.00 H7/p6 crankpin press fit & 30.00 H7/p6 main journal press fit",
-        ream_and_ops_notes="Press pin & journals at 40-ton arbor press; dial-indicate runout <= 0.025 mm",
+        tolerance_callout="28.00 H6/x6 crankpin shrink-press fit & 30.00 H6/x6 main journal shrink-press fit",
+        ream_and_ops_notes="Heat 1144 webs to 220 C, chill 4140 pins to -20 C, seat on 40-ton arbor fixture; indicate runout <= 0.025 mm",
     ),
     PartSetupSpec(
         sheet_id="piston",

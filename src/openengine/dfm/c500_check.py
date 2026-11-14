@@ -7,7 +7,6 @@ and extracts true DFM twin parameters for downstream multi-physics solvers.
 
 from dataclasses import asdict, dataclass
 import json
-import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
@@ -19,11 +18,11 @@ if TYPE_CHECKING:
 from openengine.cad.covers_and_aux import (
     FLYWHEEL_HUB_BORE_RADIUS_MM,
     FLYWHEEL_OUTER_RADIUS_MM,
-    FLYWHEEL_RIM_INNER_RADIUS_MM,
-    FLYWHEEL_RIM_WIDTH_Y_MM,
-    FLYWHEEL_WEB_WIDTH_Y_MM,
 )
-from openengine.cad.twin_metrics import get_cad_valvetrain_masses_kg
+from openengine.cad.twin_metrics import (
+    get_cad_flywheel_and_crank_inertia,
+    get_cad_valvetrain_masses_kg,
+)
 from openengine.dfm.bom import DEFAULT_BOM_CONFIG_PATH, DEFAULT_ENGINE_SPECS_PATH, resolve_bom_from_files
 from openengine.dfm.c500_spec import (
     C500Spec,
@@ -31,12 +30,8 @@ from openengine.dfm.c500_spec import (
     MODE_THREE_AXIS_FOUR_SIDE_FLIP,
     PartMachiningSpec,
 )
-from openengine.fea.calculix import STEEL_1144_STRESSPROOF
 
 MM_PER_M: float = 1000.0
-TONNE_MM3_TO_KG_M3: float = 1.0e12
-HALF_FACTOR: float = 0.5
-QUARTIC_EXPONENT: int = 4
 ROUND_DECIMALS: int = 4
 
 RADIUS_TOL_MM: float = 1.0e-3
@@ -45,9 +40,6 @@ DEFAULT_NO_CYLINDER_RADIUS_MM: float = 99.0
 DEFAULT_SWEEP_STEP_DEG: float = 60.0
 DEFAULT_HEAD_BOLT_PRELOAD_KN: float = 22.0
 
-STEEL_DENSITY_KG_M3: float = STEEL_1144_STRESSPROOF.density_tonne_mm3 * TONNE_MM3_TO_KG_M3
-
-AXIS_CHECK_COUNT: int = 3
 ENVELOPE_TOL_MM: float = 0.5
 
 PART_THREAD_MAP: Dict[str, Tuple[str, ...]] = {
@@ -157,20 +149,6 @@ def measure_min_cylindrical_radius_mm(part: Part) -> float:
   return round(min(radii), ROUND_DECIMALS)
 
 
-def _compute_dfm_flywheel_inertia_kg_m2() -> float:
-  """Compute polar mass moment of inertia [kg*m^2] of the stepped 1144 flywheel."""
-  r_outer = FLYWHEEL_OUTER_RADIUS_MM / MM_PER_M
-  r_rim_in = FLYWHEEL_RIM_INNER_RADIUS_MM / MM_PER_M
-  r_hub = FLYWHEEL_HUB_BORE_RADIUS_MM / MM_PER_M
-  w_rim = FLYWHEEL_RIM_WIDTH_Y_MM / MM_PER_M
-  w_web = FLYWHEEL_WEB_WIDTH_Y_MM / MM_PER_M
-
-  web_term = w_web * ((r_rim_in**QUARTIC_EXPONENT) - (r_hub**QUARTIC_EXPONENT))
-  rim_term = w_rim * ((r_outer**QUARTIC_EXPONENT) - (r_rim_in**QUARTIC_EXPONENT))
-  inertia = HALF_FACTOR * math.pi * STEEL_DENSITY_KG_M3 * (web_term + rim_term)
-  return round(float(inertia), ROUND_DECIMALS + AXIS_CHECK_COUNT)
-
-
 def extract_full_twin_parameters(has_fourth_axis: bool = True) -> FullTwinPhysicsParams:
   """Extract exact mass, inertia, volume, and splash metrics from 1:1 CAD assemblies."""
   from openengine.cad.assemblies import (
@@ -189,6 +167,7 @@ def extract_full_twin_parameters(has_fourth_axis: bool = True) -> FullTwinPhysic
   )
 
   in_mass, ex_mass, ret_mass = get_cad_valvetrain_masses_kg()
+  _, fw_inertia_kg_m2, _, _ = get_cad_flywheel_and_crank_inertia()
 
   return FullTwinPhysicsParams(
       total_part_count=dressed.total_part_count,
@@ -201,7 +180,7 @@ def extract_full_twin_parameters(has_fourth_axis: bool = True) -> FullTwinPhysic
       flywheel_mass_kg=rot.flywheel_mass_kg,
       flywheel_outer_radius_m=FLYWHEEL_OUTER_RADIUS_MM / MM_PER_M,
       flywheel_hub_radius_m=FLYWHEEL_HUB_BORE_RADIUS_MM / MM_PER_M,
-      flywheel_cad_inertia_kg_m2=_compute_dfm_flywheel_inertia_kg_m2(),
+      flywheel_cad_inertia_kg_m2=fw_inertia_kg_m2,
       dome_volume_cm3=head.dome_volume_cm3,
       clearance_volume_cm3=head.clearance_volume_cm3,
       swept_volume_cm3=head.swept_volume_cm3,

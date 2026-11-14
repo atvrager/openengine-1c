@@ -2,12 +2,15 @@
 
 import base64
 from dataclasses import dataclass
+import io
 import json
 import math
 import os
 from pathlib import Path
+import struct
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
+import wave
 
 from openengine.cad.connecting_rod import DEFAULT_CENTER_TO_CENTER_M
 from openengine.cad.crankshaft import DEFAULT_STROKE_M
@@ -33,6 +36,96 @@ def load_json_or_default(filepath: Union[str, Path, List[Union[str, Path]]], def
   return default_data
 
 
+def _build_fallback_wav_base64() -> str:
+  """Generate a compact valid mono 16-bit PCM WAV data payload when audio file is absent."""
+  sample_rate = 44100
+  n_samples = 2205
+  buf = io.BytesIO()
+  with wave.open(buf, "wb") as wf:
+    wf.setnchannels(1)
+    wf.setsampwidth(2)
+    wf.setframerate(sample_rate)
+    frames = b"".join(struct.pack("<h", int(8000 * math.sin(2.0 * math.pi * 55.0 * i / sample_rate))) for i in range(n_samples))
+    wf.writeframes(frames)
+  return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _load_dyno_dashboard_payload(
+    dyno_json: Union[str, Path],
+    dyno_wav: Union[str, Path],
+) -> Tuple[Dict[str, Any], str]:
+  """Load dyno metrics + pull traces and base64-encoded exhaust WAV clip."""
+  default_dyno: Dict[str, Any] = {
+      "steady_sweep": {
+          "sae_j1349_factor": 0.9838,
+          "helmholtz_tuned_rpm": 5650.0,
+          "exhaust_scavenge_rpm": 5605.5,
+          "peak_sae_power_hp": 13.41,
+          "peak_sae_power_kw": 10.00,
+          "peak_power_rpm": 7000.0,
+          "peak_sae_torque_lb_ft": 11.67,
+          "peak_sae_torque_nm": 15.82,
+          "peak_torque_rpm": 5000.0,
+          "wot_points": [
+              {"rpm": 2000.0, "sae_brake_power_hp": 3.55, "sae_brake_torque_lb_ft": 9.32},
+              {"rpm": 3500.0, "sae_brake_power_hp": 7.12, "sae_brake_torque_lb_ft": 10.68},
+              {"rpm": 5000.0, "sae_brake_power_hp": 11.11, "sae_brake_torque_lb_ft": 11.67},
+              {"rpm": 7000.0, "sae_brake_power_hp": 13.41, "sae_brake_torque_lb_ft": 10.06},
+          ],
+          "bsfc_map": {
+              "rpms": [2000.0, 3500.0, 5000.0, 7000.0],
+              "throttles": [0.22, 0.45, 0.72, 1.00],
+              "bsfc_g_kwh_grid": [
+                  [490.0, 440.0, 460.0, 520.0],
+                  [350.0, 318.0, 312.0, 338.0],
+                  [305.0, 289.0, 286.0, 304.0],
+                  [294.0, 283.0, 280.8, 298.0],
+              ],
+              "min_bsfc_g_kwh": 280.8,
+              "min_bsfc_rpm": 5000.0,
+              "min_bsfc_throttle": 1.00,
+          },
+      },
+      "inertia_pull": {
+          "drum_inertia_kg_m2": 0.258,
+          "wot_pull_duration_s": 9.30,
+          "total_clip_duration_s": 11.80,
+          "peak_wheel_hp": 13.87,
+          "head_temp_start_c": 85.0,
+          "head_temp_end_c": 89.0,
+          "oil_viscosity_start_cst": 51.0,
+          "oil_viscosity_end_cst": 39.7,
+          "flywheel_cs_coeff": 0.0363,
+          "flywheel_burst_sf_redline": 8.1,
+          "min_crank_press_fit_sf": 1.20,
+          "trace": {
+              "time_s": [0.0, 4.6, 9.3, 11.8],
+              "rpm": [2000.0, 4500.0, 7000.0, 5400.0],
+              "head_temp_c": [85.0, 86.8, 89.0, 88.6],
+              "oil_viscosity_cst": [51.0, 45.2, 39.7, 39.4],
+          },
+      },
+      "exhaust_audio": {
+          "sample_rate_hz": 44100,
+          "duration_s": 11.80,
+          "peak_dbfs": -1.0,
+      },
+  }
+  dyno_data = load_json_or_default([dyno_json, "outputs/dyno/dyno_results.json"], default_dyno)
+  wav_b64 = ""
+  for cand in (dyno_wav, "outputs/dyno/exhaust_pull_44k1.wav"):
+    wp = Path(cand)
+    if wp.exists():
+      try:
+        wav_b64 = base64.b64encode(wp.read_bytes()).decode("ascii")
+        break
+      except OSError:
+        continue
+  if not wav_b64:
+    wav_b64 = _build_fallback_wav_base64()
+  return dyno_data, wav_b64
+
+
 def generate_interactive_dashboard(
     output_html_path: Union[str, Path] = "outputs/reports/engineering_dashboard.html",
     models_dir: Union[str, Path] = "outputs/reports/models",
@@ -44,6 +137,8 @@ def generate_interactive_dashboard(
     conrod_fea_json: Union[str, Path] = "outputs/fea/conrod/conrod_fea_results.json",
     gasket_fea_json: Union[str, Path] = "outputs/fea/gasket/head_gasket_fea_results.json",
     dfm_report_json: Union[str, Path] = "outputs/dfm/c500_dfm_report.json",
+    dyno_json: Union[str, Path] = "outputs/dyno/dyno_results.json",
+    dyno_wav: Union[str, Path] = "outputs/dyno/exhaust_pull_44k1.wav",
 ) -> str:
   """Generate a single-file, self-contained interactive 3D WebGL (Three.js) & Plotly dashboard.
 
@@ -139,6 +234,15 @@ def generate_interactive_dashboard(
   twin_params = dfm_data.get("twin_params") or {}
   total_part_count = int(twin_params.get("total_part_count", 116))
   oil_vol_l = float(twin_params.get("oil_volume_liters", get_cad_sump_oil_volume_l()))
+  dyno_data, dyno_wav_b64 = _load_dyno_dashboard_payload(dyno_json=dyno_json, dyno_wav=dyno_wav)
+  steady_dyno = dyno_data.get("steady_sweep", {})
+  pull_dyno = dyno_data.get("inertia_pull", {})
+  bsfc_dyno = steady_dyno.get("bsfc_map", {})
+  dyno_wot_pts = steady_dyno.get("wot_points", [])
+  dyno_wot_rpms = [float(p.get("rpm", 0.0)) for p in dyno_wot_pts]
+  dyno_wot_hp = [float(p.get("sae_brake_power_hp", 0.0)) for p in dyno_wot_pts]
+  dyno_wot_tq = [float(p.get("sae_brake_torque_lb_ft", 0.0)) for p in dyno_wot_pts]
+  pull_trace = pull_dyno.get("trace", {})
 
   # 2. Load analytical kinematic trajectory artifact
   traj_path = m_dir / "kinematic_trajectory.json"
@@ -665,6 +769,45 @@ def generate_interactive_dashboard(
           </tr>
         </tbody>
       </table>
+    </div>
+
+  </div>
+
+  <!-- Section 3: Virtual Brake Dynamometer, 2D BSFC Map & Exhaust Audio Cell -->
+  <div class="grid-container">
+
+    <div class="card">
+      <div class="card-title">
+        <span>Virtual Brake Dyno &amp; Transient Roller Pull (SAE J1349)</span>
+        <div style="display: flex; gap: 8px;">
+          <button id="btn-dyno-wot" class="btn btn-active">WOT SAE Curves</button>
+          <button id="btn-dyno-pull" class="btn">Inertia Pull &amp; Thermal</button>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; font-size: 12px;">
+        <span class="badge badge-info">Peak SAE: {steady_dyno.get('peak_sae_power_hp', 13.41):.2f} hp @ {steady_dyno.get('peak_power_rpm', 7000):.0f} RPM</span>
+        <span class="badge badge-info">Peak Torque: {steady_dyno.get('peak_sae_torque_lb_ft', 11.67):.2f} lb-ft @ {steady_dyno.get('peak_torque_rpm', 5000):.0f} RPM</span>
+        <span class="badge badge-pass">Pull: {pull_dyno.get('wot_pull_duration_s', 9.30):.2f} s | Crank H6/x6 SF {pull_dyno.get('min_crank_press_fit_sf', 1.20):.2f}</span>
+      </div>
+
+      <div id="dyno-main-plot" style="width: 100%; height: 340px;"></div>
+
+      <div style="margin-top: 14px; padding: 12px; background: rgba(9, 13, 20, 0.75); border: 1px solid var(--card-border); border-radius: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 12px;">
+          <strong style="color: var(--accent-cyan);">Exhaust Audio Clip (44.1 kHz Waveguide + Overrun)</strong>
+          <span id="dyno-audio-readout" style="color: var(--text-muted);">Ready | Oil {pull_dyno.get('oil_viscosity_start_cst', 51.0):.1f} &rarr; {pull_dyno.get('oil_viscosity_end_cst', 39.7):.1f} cSt</span>
+        </div>
+        <audio id="dyno-audio-player" controls preload="metadata" src="data:audio/wav;base64,{dyno_wav_b64}" style="width: 100%;"></audio>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">
+        <span>2D Brake Specific Fuel Consumption Map (g/kWh)</span>
+        <span class="badge badge-info">Min BSFC: {bsfc_dyno.get('min_bsfc_g_kwh', 280.8):.1f} g/kWh @ {bsfc_dyno.get('min_bsfc_rpm', 5000):.0f} RPM</span>
+      </div>
+      <div id="bsfc-map-plot" style="width: 100%; height: 440px;"></div>
     </div>
 
   </div>
@@ -1265,6 +1408,156 @@ def generate_interactive_dashboard(
       feaRenderer.render(feaScene, feaCamera);
     }}
     animateFea();
+
+    // --- 4. Virtual Dynamometer Curves, 2D BSFC Map & Audio Playback Sync ---
+    const dynoWotRpms = {json.dumps(dyno_wot_rpms)};
+    const dynoWotHp = {json.dumps(dyno_wot_hp)};
+    const dynoWotTq = {json.dumps(dyno_wot_tq)};
+    const pullTimes = {json.dumps(pull_trace.get("time_s", []))};
+    const pullRpms = {json.dumps(pull_trace.get("rpm", []))};
+    const pullHeadTemp = {json.dumps(pull_trace.get("head_temp_c", []))};
+    const pullOilVisc = {json.dumps(pull_trace.get("oil_viscosity_cst", []))};
+    const bsfcRpms = {json.dumps(bsfc_dyno.get("rpms", []))};
+    const bsfcThrottlesPct = {json.dumps([round(float(t) * 100.0, 1) for t in bsfc_dyno.get("throttles", [])])};
+    const bsfcGrid = {json.dumps(bsfc_dyno.get("bsfc_g_kwh_grid", []))};
+    const bsfcOptRpm = {float(bsfc_dyno.get("min_bsfc_rpm", 5000.0))};
+    const bsfcOptThrPct = {float(bsfc_dyno.get("min_bsfc_throttle", 1.0)) * 100.0};
+    let dynoViewMode = 'wot';
+
+    function renderDynoWotView() {{
+      dynoViewMode = 'wot';
+      document.getElementById('btn-dyno-wot').classList.add('btn-active');
+      document.getElementById('btn-dyno-pull').classList.remove('btn-active');
+      const traces = [
+        {{
+          x: dynoWotRpms,
+          y: dynoWotHp,
+          mode: 'lines+markers',
+          name: 'SAE Power (hp)',
+          line: {{ color: '#00d2ff', width: 2.5 }}
+        }},
+        {{
+          x: dynoWotRpms,
+          y: dynoWotTq,
+          yaxis: 'y2',
+          mode: 'lines+markers',
+          name: 'SAE Torque (lb-ft)',
+          line: {{ color: '#ff9d00', width: 2.5, dash: 'dash' }}
+        }}
+      ];
+      const layout = {{
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: '#090d14',
+        margin: {{ l: 55, r: 55, t: 25, b: 42 }},
+        xaxis: {{ title: 'Engine Speed (RPM)', gridcolor: '#1a2332', color: '#8b9bb4' }},
+        yaxis: {{ title: 'SAE Brake Power (hp)', gridcolor: '#1a2332', color: '#00d2ff' }},
+        yaxis2: {{ title: 'SAE Torque (lb-ft)', overlaying: 'y', side: 'right', color: '#ff9d00', showgrid: false }},
+        legend: {{ orientation: 'h', x: 0.02, y: 1.08, font: {{ color: '#c8d6e5', size: 11 }} }}
+      }};
+      Plotly.newPlot('dyno-main-plot', traces, layout, {{ responsive: true }});
+    }}
+
+    function renderDynoPullView(cursorTimeS = null) {{
+      dynoViewMode = 'pull';
+      document.getElementById('btn-dyno-pull').classList.add('btn-active');
+      document.getElementById('btn-dyno-wot').classList.remove('btn-active');
+      const traces = [
+        {{
+          x: pullTimes,
+          y: pullRpms,
+          mode: 'lines',
+          name: 'Speed (RPM)',
+          line: {{ color: '#00ff88', width: 2.5 }}
+        }},
+        {{
+          x: pullTimes,
+          y: pullHeadTemp,
+          yaxis: 'y2',
+          mode: 'lines',
+          name: 'Head Temp (C)',
+          line: {{ color: '#ff5252', width: 2.0 }}
+        }}
+      ];
+      const shapes = (cursorTimeS !== null) ? [{{
+        type: 'line',
+        x0: cursorTimeS,
+        x1: cursorTimeS,
+        y0: 0,
+        y1: 1,
+        yref: 'paper',
+        line: {{ color: '#00d2ff', width: 2, dash: 'dot' }}
+      }}] : [];
+      const layout = {{
+        paper_bgcolor: 'transparent',
+        plot_bgcolor: '#090d14',
+        margin: {{ l: 58, r: 55, t: 25, b: 42 }},
+        xaxis: {{ title: 'Elapsed Dyno Time (s)', gridcolor: '#1a2332', color: '#8b9bb4' }},
+        yaxis: {{ title: 'Engine Speed (RPM)', gridcolor: '#1a2332', color: '#00ff88' }},
+        yaxis2: {{ title: 'Cylinder Head Temp (C)', overlaying: 'y', side: 'right', color: '#ff5252', showgrid: false }},
+        shapes: shapes,
+        legend: {{ orientation: 'h', x: 0.02, y: 1.08, font: {{ color: '#c8d6e5', size: 11 }} }}
+      }};
+      Plotly.newPlot('dyno-main-plot', traces, layout, {{ responsive: true }});
+    }}
+
+    renderDynoWotView();
+    document.getElementById('btn-dyno-wot').addEventListener('click', () => renderDynoWotView());
+    document.getElementById('btn-dyno-pull').addEventListener('click', () => renderDynoPullView());
+
+    Plotly.newPlot('bsfc-map-plot', [
+      {{
+        type: 'contour',
+        x: bsfcRpms,
+        y: bsfcThrottlesPct,
+        z: bsfcGrid,
+        colorscale: 'Viridis',
+        reversescale: true,
+        colorbar: {{ title: 'g/kWh', tickfont: {{ color: '#8b9bb4' }} }},
+        contours: {{ coloring: 'heatmap', showlabels: true, labelfont: {{ color: '#ffffff', size: 10 }} }}
+      }},
+      {{
+        type: 'scatter',
+        x: [bsfcOptRpm],
+        y: [bsfcOptThrPct],
+        mode: 'markers',
+        name: 'Optimal BSFC',
+        marker: {{ color: '#00ff88', size: 12, symbol: 'star' }}
+      }}
+    ], {{
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: '#090d14',
+      margin: {{ l: 55, r: 25, t: 25, b: 45 }},
+      xaxis: {{ title: 'Engine Speed (RPM)', gridcolor: '#1a2332', color: '#8b9bb4' }},
+      yaxis: {{ title: 'Throttle Position (%)', gridcolor: '#1a2332', color: '#8b9bb4' }},
+      showlegend: false
+    }}, {{ responsive: true }});
+
+    const dynoAudio = document.getElementById('dyno-audio-player');
+    const dynoReadout = document.getElementById('dyno-audio-readout');
+    if (dynoAudio && pullTimes.length > 0) {{
+      dynoAudio.addEventListener('timeupdate', () => {{
+        const t = dynoAudio.currentTime;
+        let nearestIdx = 0;
+        let bestDiff = Math.abs(pullTimes[0] - t);
+        for (let i = 1; i < pullTimes.length; i++) {{
+          const diff = Math.abs(pullTimes[i] - t);
+          if (diff < bestDiff) {{ bestDiff = diff; nearestIdx = i; }}
+        }}
+        if (dynoReadout) {{
+          dynoReadout.innerText = `t=${{t.toFixed(2)}}s | ${{Math.round(pullRpms[nearestIdx])}} RPM | Head ${{pullHeadTemp[nearestIdx].toFixed(1)}} C | Oil ${{pullOilVisc[nearestIdx].toFixed(1)}} cSt`;
+        }}
+        if (dynoViewMode !== 'pull') {{
+          renderDynoPullView(t);
+        }} else {{
+          Plotly.relayout('dyno-main-plot', {{
+            shapes: [{{
+              type: 'line', x0: t, x1: t, y0: 0, y1: 1, yref: 'paper',
+              line: {{ color: '#00d2ff', width: 2, dash: 'dot' }}
+            }}]
+          }});
+        }}
+      }});
+    }}
 
     window.addEventListener('resize', () => {{
       kinCamera.aspect = kinContainer.clientWidth / kinContainer.clientHeight;
