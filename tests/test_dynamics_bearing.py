@@ -2,14 +2,19 @@
 
 import numpy as np
 from openengine.dynamics.bearing import (
+    CRANKPIN_NEEDLE_NKS28_SPEC,
+    MAIN_BALL_6206_SPEC,
     BearingGeometry,
     HydrodynamicBearing,
+    OilProperties,
+    analyze_rolling_bearing_life,
     finite_bearing_sommerfeld,
     ocvirk_load_capacity,
     sommerfeld_long_load_capacity,
 )
 from openengine.dynamics.flywheel import FlywheelDimensions, FlywheelDynamics
 from openengine.dynamics.slider_crank import SliderCrankDynamics
+from openengine.dynamics.sohc_cam import SOHCCamshaft
 from openengine.thermo.cycle import EngineGeometry
 from openengine.thermo.gas_exchange import FourStrokeSimulator
 
@@ -17,7 +22,7 @@ from openengine.thermo.gas_exchange import FourStrokeSimulator
 def test_shaking_force_and_balance_sweep():
   """Verify 2D polar shaking force calculation and balance factor optimization."""
   geom = EngineGeometry(
-      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.8
+      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.0
   )
   sim = FourStrokeSimulator(geom=geom)
   res = sim.solve_cycle(rpm=5500.0)
@@ -53,7 +58,7 @@ def test_shaking_force_and_balance_sweep():
 def test_flywheel_energy_integration_and_sizing():
   """Verify flywheel torque-energy integration, speed fluctuation, and hoop stress."""
   geom = EngineGeometry(
-      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.8
+      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.0
   )
   sim = FourStrokeSimulator(geom=geom)
   res = sim.solve_cycle(rpm=5500.0)
@@ -99,7 +104,7 @@ def test_hydrodynamic_journal_bearing():
   assert cap_02 > cap_05 > cap_08 > 0.0
 
   geom = EngineGeometry(
-      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.8
+      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.0
   )
   sim = FourStrokeSimulator(geom=geom)
   res = sim.solve_cycle(rpm=5500.0)
@@ -176,7 +181,7 @@ def test_finite_width_bearing_limits_and_steady_convergence():
 def test_modified_crank_big_end_dynamic_orbit_across_kart_speeds():
   """Verify 28 x 20 mm finite-width con-rod bearing dynamic orbit from 3000 to 7000 RPM."""
   geom = EngineGeometry(
-      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.8
+      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.0
   )
   sim = FourStrokeSimulator(geom=geom)
   dyn = SliderCrankDynamics(geom=geom)
@@ -227,3 +232,63 @@ def test_modified_crank_big_end_dynamic_orbit_across_kart_speeds():
       < reports[5500.0].min_film_thickness_um
       < reports[7000.0].min_film_thickness_um
   )
+
+
+def test_dfm_rolling_element_bearings_iso281_life():
+  """Verify ISO 281 L10 fatigue life and static safety on crankpin needle and main ball bearings."""
+  geom = EngineGeometry(
+      bore=0.068, stroke=0.054, con_rod_length=0.108, compression_ratio=9.0
+  )
+  sim = FourStrokeSimulator(geom=geom)
+  dyn = SliderCrankDynamics(geom=geom)
+
+  res = sim.solve_cycle(rpm=5500.0)
+  forces = dyn.solve_forces(rpm=5500.0, theta_deg=res.theta_deg, pressure_pa=res.pressure_pa)
+  f_big_end = np.sqrt(forces.net_wrist_pin_force_n**2 + forces.cylinder_side_thrust_n**2)
+
+  needle_rep = analyze_rolling_bearing_life(CRANKPIN_NEEDLE_NKS28_SPEC, 5500.0, f_big_end)
+  ball_rep = analyze_rolling_bearing_life(MAIN_BALL_6206_SPEC, 5500.0, f_big_end)
+
+  for spec, rep in ((CRANKPIN_NEEDLE_NKS28_SPEC, needle_rep), (MAIN_BALL_6206_SPEC, ball_rep)):
+    assert rep.is_safe
+    assert rep.l10_hours >= spec.min_l10_hours
+    assert rep.static_safety_factor >= 1.0
+    assert np.isfinite(rep.equivalent_dynamic_load_n)
+    assert rep.equivalent_dynamic_load_n > 0.0
+
+
+def test_dfm_sohc_cam_tower_plain_journal_bearing():
+  """Verify 20 x 12 mm 6061-T6 SOHC cam-tower plain journal hydrodynamic film."""
+  cam = SOHCCamshaft()
+  kin_in = cam.evaluate_lobe_cam_angle(cam.intake_params, rpm=5500.0, num_points=360)
+  kin_ex = cam.evaluate_lobe_cam_angle(cam.exhaust_params, rpm=5500.0, num_points=360)
+  cam_radial_load = 0.5 * (
+      kin_in.follower_contact_force_n + np.roll(kin_ex.follower_contact_force_n, 105)
+  ) + 90.0
+
+  cam_journal = HydrodynamicBearing(
+      geom=BearingGeometry(
+          name="SOHC Cam-Tower Plain Journal",
+          journal_diameter_m=0.020,
+          bearing_width_m=0.012,
+          radial_clearance_m=18.0e-6,
+          journal_roughness_rms_m=0.20e-6,
+          bearing_roughness_rms_m=0.25e-6,
+          max_allowable_pressure_mpa=25.0,
+      ),
+      oil=OilProperties(
+          name="SAE 10W-40 Splash Equilibrium",
+          dynamic_viscosity_pa_s=0.0095,
+          density_kg_m3=812.0,
+      ),
+  )
+
+  rep = cam_journal.analyze_bearing_safety(
+      rpm=2750.0,
+      theta_deg=kin_in.cam_angle_deg,
+      radial_load_n=cam_radial_load,
+  )
+  assert rep.is_safe
+  assert rep.is_hydrodynamic
+  assert rep.min_lambda_ratio >= 2.5
+  assert rep.peak_pressure_mpa < 25.0

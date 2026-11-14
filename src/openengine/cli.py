@@ -28,6 +28,10 @@ from openengine.cad import (
     verify_assembly_clearances,
     verify_dressed_engine,
 )
+from openengine.cad.valvetrain_hardware import (
+    CAM_JOURNAL_DIAMETER_M,
+    TOWER_FRONT_JOURNAL_LAND_M,
+)
 from openengine.cfd import (
     ChtCoolingConfig,
     ClosedLoopConfig,
@@ -38,17 +42,27 @@ from openengine.cfd import (
     run_combustion_simulation,
     run_port_flow_sweep,
 )
-from openengine.dfm import export_bom_artifacts, resolve_bom_from_files
+from openengine.dfm import (
+    export_bom_artifacts,
+    export_c500_setup_sheets,
+    resolve_bom_from_files,
+    run_c500_dfm_check,
+)
 from openengine.dynamics import (
     BearingGeometry,
+    CRANKPIN_NEEDLE_NKS28_SPEC,
     FlywheelDimensions,
     FlywheelDynamics,
     HydrodynamicBearing,
+    MAIN_BALL_6206_SPEC,
+    OilProperties,
     SOHCCamshaft,
     SliderCrankDynamics,
+    analyze_rolling_bearing_life,
 )
 from openengine.fea import (
     ALUMINUM_4032_T6,
+    ALUMINUM_7075_T6,
     ConrodFeaConfig,
     HeadGasketFeaConfig,
     PistonFeaConfig,
@@ -88,6 +102,34 @@ def load_config(config_path: str = "config/engine_specs.yaml") -> dict:
     raise FileNotFoundError(f"Configuration file not found: {config_path}")
   with open(path, "r") as f:
     return yaml.safe_load(f)
+
+
+def _solve_default_thermal_balance(
+    config_path: str = "config/engine_specs.yaml",
+    rpm: float = 0.0,
+):
+  """Solve coupled 4-stroke cycle and equilibrium wet-sump splash thermal balance."""
+  cfg = load_config(config_path)
+  lub_cfg = cfg.get("lubrication", {})
+  target_rpm = rpm if rpm > 0.0 else float(cfg["operating_conditions"]["rated_rpm"])
+  grade_name = str(lub_cfg.get("oil_grade", "SAE 10W-40"))
+  spec = OilGradeSpec.from_name(grade_name)
+  splash_params = SplashSystemParams.from_config(cfg)
+  thermal_params = SumpThermalParams.from_config(cfg)
+
+  sim = FourStrokeSimulator.from_config(cfg)
+  sim.oil_spec = spec
+  thermo_res = sim.solve_cycle(rpm=target_rpm)
+  tb = solve_sump_thermal_balance(
+      geom=sim.geom,
+      rpm=target_rpm,
+      theta_deg=thermo_res.theta_deg,
+      pressure_pa=thermo_res.pressure_pa,
+      oil_spec=spec,
+      splash_params=splash_params,
+      thermal_params=thermal_params,
+  )
+  return cfg, sim, thermo_res, spec, tb
 
 
 @app.command()
@@ -396,61 +438,61 @@ def dynamics(
     config_path: str = "config/engine_specs.yaml",
     rpm: float = 0.0,
 ):
-  """Run slider-crank dynamics, polar shaking vectors, flywheel sizing, and bearing PV orbit."""
-  cfg = load_config(config_path)
-  g = cfg["geometry"]
-  geom = EngineGeometry(
-      bore=g["bore"],
-      stroke=g["stroke"],
-      con_rod_length=g["con_rod_length"],
-      compression_ratio=g["compression_ratio"],
-  )
-
+  """Run slider-crank dynamics, flywheel sizing, ISO 281 rolling bearings, and SOHC cam journal."""
+  cfg, sim, thermo_res, oil_spec, tb = _solve_default_thermal_balance(config_path=config_path, rpm=rpm)
+  geom = sim.geom
   target_rpm = rpm if rpm > 0.0 else float(cfg["operating_conditions"]["rated_rpm"])
-
-  sim = FourStrokeSimulator(geom)
-  thermo_res = sim.solve_cycle(rpm=target_rpm)
 
   dyn = SliderCrankDynamics(geom)
   forces = dyn.solve_forces(
       rpm=target_rpm,
       theta_deg=thermo_res.theta_deg,
       pressure_pa=thermo_res.pressure_pa,
-      recip_balance_factor=0.50,
+      recip_balance_factor=float(cfg.get("balancing", {}).get("reciprocating_balance_factor", 0.50)),
   )
   sweep = dyn.sweep_balance_factors(rpm=target_rpm, forces=forces)
 
-  # Flywheel sizing via FlywheelDynamics
+  # Flywheel sizing via FlywheelDynamics (160 mm OD C500 1144 steel geometry)
   fw_dyn = FlywheelDynamics()
   fw_rep = fw_dyn.size_flywheel(
       rated_rpm=target_rpm,
       theta_deg=thermo_res.theta_deg,
       torque_nm=forces.crankshaft_torque_nm,
-      target_coeff_fluctuation=0.035,
+      target_coeff_fluctuation=float(cfg.get("balancing", {}).get("speed_fluctuation_target", 0.035)),
       redline_rpm=float(cfg["operating_conditions"]["redline_rpm"]),
   )
 
-  # Big-end bearing lubrication via finite-width dynamic HydrodynamicBearing
+  # Option A.1: ISO 281 L10 rolling-bearing fatigue life (INA NKS28-XL needle + 2x 6206-2Z main ball)
   f_big_end = np.sqrt(forces.net_wrist_pin_force_n**2 + forces.cylinder_side_thrust_n**2)
-  th_rad = np.radians(thermo_res.theta_deg)
-  lam = geom.crank_radius / geom.con_rod_length
-  omega = target_rpm * (2.0 * np.pi / 60.0)
-  conrod_omega = -lam * omega * np.cos(th_rad) / np.sqrt(1.0 - (lam * np.sin(th_rad)) ** 2)
-  big_end_bearing = HydrodynamicBearing(
+  crankpin_life = analyze_rolling_bearing_life(CRANKPIN_NEEDLE_NKS28_SPEC, target_rpm, f_big_end)
+  main_ball_life = analyze_rolling_bearing_life(MAIN_BALL_6206_SPEC, target_rpm, f_big_end)
+
+  # Option A.2: Hydrodynamic squeeze-film check on 20 mm SOHC cam-tower plain journal
+  eq_oil = oil_spec.evaluate(tb.equilibrium_oil_temp_c)
+  cam = SOHCCamshaft()
+  kin_in = cam.evaluate_lobe_cam_angle(cam.intake_params, rpm=target_rpm, num_points=360)
+  kin_ex = cam.evaluate_lobe_cam_angle(cam.exhaust_params, rpm=target_rpm, num_points=360)
+  cam_radial_load = 0.5 * (
+      kin_in.follower_contact_force_n + np.roll(kin_ex.follower_contact_force_n, 105)
+  ) + 90.0
+  cam_journal = HydrodynamicBearing(
       geom=BearingGeometry(
-          name="Con-Rod Big-End Journal",
-          journal_diameter_m=g.get("crankpin_diameter", 0.028),
-          bearing_width_m=0.020,
-          radial_clearance_m=20.0e-6,
-      )
+          name="SOHC Cam-Tower Plain Journal",
+          journal_diameter_m=CAM_JOURNAL_DIAMETER_M,
+          bearing_width_m=TOWER_FRONT_JOURNAL_LAND_M,
+          radial_clearance_m=18.0e-6,
+          max_allowable_pressure_mpa=35.0,
+      ),
+      oil=OilProperties(
+          name=f"{oil_spec.grade} @ {tb.equilibrium_oil_temp_c:.1f} C",
+          dynamic_viscosity_pa_s=eq_oil.dynamic_viscosity_pa_s,
+          density_kg_m3=eq_oil.density_kg_m3,
+      ),
   )
-  bearing_rep = big_end_bearing.analyze_bearing_safety(
-      rpm=target_rpm,
-      theta_deg=thermo_res.theta_deg,
-      radial_load_n=f_big_end,
-      load_x_n=forces.cylinder_side_thrust_n,
-      load_z_n=-forces.net_wrist_pin_force_n,
-      sleeve_omega_rad_s=conrod_omega,
+  cam_brg_rep = cam_journal.analyze_bearing_safety(
+      rpm=target_rpm * 0.5,
+      theta_deg=kin_in.cam_angle_deg,
+      radial_load_n=cam_radial_load,
   )
 
   table = Table(
@@ -481,31 +523,51 @@ def dynamics(
   fw_table.add_row("Required Inertia (I_fw)", f"{fw_rep.flywheel_inertia_kg_m2 * 1000.0:.2f} × 10⁻³ kg·m²")
   fw_table.add_row("Speed Fluctuation Coeff (C_s)", f"{fw_rep.actual_fluctuation_coeff * 100:.2f} % (Target <= 3.5%)")
   fw_table.add_row("Speed Fluctuation Range", f"{fw_rep.min_rpm_at_rated:.0f} to {fw_rep.max_rpm_at_rated:.0f} RPM")
-  fw_table.add_row("Disc Outer Diameter / Hub", f"{fw_dyn.dims.outer_radius_m * 2000:.0f} mm / {fw_dyn.dims.inner_bore_radius_m * 2000:.0f} mm")
+  fw_table.add_row("Disc Outer Diameter / Hub", f"{fw_dyn.dims.outer_radius_m * 2000:.0f} mm / {fw_dyn.dims.inner_bore_radius_m * 2000:.1f} mm")
   fw_table.add_row("Rim Axial Thickness", f"{fw_rep.flywheel_thickness_mm:.1f} mm")
   fw_table.add_row("Flywheel Mass", f"{fw_rep.flywheel_mass_kg:.2f} kg")
   fw_table.add_row("Rim Hoop Stress @ Redline", f"{fw_rep.hoop_stress_redline_mpa:.1f} MPa")
   fw_table.add_row("Burst Safety Factor @ Redline", f"{fw_rep.burst_safety_factor_redline:.1f} (Safe: {fw_rep.is_safe})")
   rich.print(fw_table)
 
-  brg_table = Table(
-      title="Big-End Finite-Width Dynamic Journal Bearing (Squeeze-Film Orbit)",
+  roll_table = Table(
+      title="Crank Rolling Bearings (ISO 281 L10 Fatigue Life)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  roll_table.add_column("Bearing (SKU)", style="cyan")
+  roll_table.add_column("P_eq / C_r (kN)", style="yellow")
+  roll_table.add_column("Static SF (S0)", style="green")
+  roll_table.add_column("L10 (10^6 rev)", style="green")
+  roll_table.add_column("L10h @ RPM (hr)", style="bold green")
+  roll_table.add_column("Status", style="bold green")
+  for brg_rep in (crankpin_life, main_ball_life):
+    roll_table.add_row(
+        f"{brg_rep.bearing_name} [{brg_rep.sku}]",
+        f"{brg_rep.equivalent_dynamic_load_n / 1000.0:.2f} / {brg_rep.dynamic_load_rating_n / 1000.0:.1f}",
+        f"{brg_rep.static_safety_factor:.2f}",
+        f"{brg_rep.l10_million_revs:.1f}",
+        f"{brg_rep.l10_hours:.0f} h",
+        _status_badge(brg_rep.is_safe),
+    )
+  rich.print(roll_table)
+
+  cam_table = Table(
+      title=f"SOHC Cam-Tower Plain Journal ({cam_journal.oil.name})",
       show_header=True,
       header_style="bold blue",
   )
-  brg_table.add_column("Bearing Parameter", style="cyan")
-  brg_table.add_column("Value", style="bold green")
-  brg_table.add_row("Journal Diameter × Width", f"{big_end_bearing.geom.journal_diameter_m * 1000:.1f} × {big_end_bearing.geom.bearing_width_m * 1000:.1f} mm")
-  brg_table.add_row("Radial Clearance (c)", f"{big_end_bearing.geom.radial_clearance_m * 1.0e6:.1f} µm")
-  brg_table.add_row("Peak Radial Load", f"{bearing_rep.peak_load_n / 1000.0:.2f} kN")
-  brg_table.add_row("Peak Projected Pressure (P_max)", f"{bearing_rep.peak_pressure_mpa:.1f} MPa (Limit: {bearing_rep.allowable_pressure_mpa:.1f} MPa)")
-  brg_table.add_row("Mean Bearing Pressure", f"{bearing_rep.mean_pressure_mpa:.1f} MPa")
-  brg_table.add_row("Journal Sliding Velocity", f"{bearing_rep.sliding_velocity_m_s:.2f} m/s")
-  brg_table.add_row("Peak PV Factor", f"{bearing_rep.peak_pv_mpa_m_s:.1f} MPa·m/s")
-  brg_table.add_row("Peak Journal Eccentricity (ε_max)", f"{bearing_rep.peak_eccentricity_ratio:.4f}")
-  brg_table.add_row("Minimum Oil Film Thickness (h_min)", f"{bearing_rep.min_film_thickness_um:.2f} µm")
-  brg_table.add_row("Lubrication Lambda Ratio (h_min / R_q)", f"{bearing_rep.min_lambda_ratio:.2f} (Full Hydrodynamic: {bearing_rep.is_hydrodynamic})")
-  rich.print(brg_table)
+  cam_table.add_column("Journal Parameter", style="cyan")
+  cam_table.add_column("Value", style="bold green")
+  cam_table.add_row("Journal Diameter × Width", f"{cam_journal.geom.journal_diameter_m * 1000:.1f} × {cam_journal.geom.bearing_width_m * 1000:.1f} mm")
+  cam_table.add_row("Radial Clearance (c)", f"{cam_journal.geom.radial_clearance_m * 1.0e6:.1f} µm")
+  cam_table.add_row("Peak Radial Load (2 Cam Lobes + #25 Chain)", f"{cam_brg_rep.peak_load_n:.1f} N")
+  cam_table.add_row("Peak Projected Pressure (P_max)", f"{cam_brg_rep.peak_pressure_mpa:.2f} MPa (Limit: {cam_brg_rep.allowable_pressure_mpa:.1f} MPa)")
+  cam_table.add_row("Journal Sliding Velocity (@ Cam RPM)", f"{cam_brg_rep.sliding_velocity_m_s:.2f} m/s")
+  cam_table.add_row("Peak Eccentricity (ε_max)", f"{cam_brg_rep.peak_eccentricity_ratio:.4f}")
+  cam_table.add_row("Minimum Oil Film Thickness (h_min)", f"{cam_brg_rep.min_film_thickness_um:.2f} µm")
+  cam_table.add_row("Lubrication Lambda Ratio (h_min / R_q)", f"{cam_brg_rep.min_lambda_ratio:.2f} (Full Hydrodynamic: {cam_brg_rep.is_hydrodynamic})")
+  rich.print(cam_table)
 
 
 @app.command()
@@ -522,11 +584,12 @@ def bom(
     strict: bool = True,
 ):
   """Generate C500 DFM envelope audit, offline McMaster-Carr BoM, and Order-Pad export."""
+  axis_override = fourth_axis if (fourth_axis is None or isinstance(fourth_axis, bool)) else None
   report = resolve_bom_from_files(
       engine_path=Path(config_path),
       c500_path=Path(c500_path),
       bom_path=Path(bom_path),
-      has_fourth_axis_override=fourth_axis,
+      has_fourth_axis_override=axis_override,
   )
   export_paths = export_bom_artifacts(report, output_dir=Path(output_dir))
 
@@ -604,6 +667,93 @@ def bom(
       rich.print(f"[bold red]DFM/BoM Violation:[/bold red] {err}")
 
   if strict and (not val.is_valid or any(not chk.is_valid for chk in report.c500_checks)):
+    raise typer.Exit(code=1)
+
+
+@app.command(name="dfm-check")
+def dfm_check(
+    c500_path: str = "config/c500_constraints.yaml",
+    output_dir: str = "outputs/dfm",
+    fourth_axis: Optional[bool] = typer.Option(
+        None,
+        "--fourth-axis/--no-fourth-axis",
+        help="Override C500 4th-axis rotary availability",
+    ),
+    drawings: bool = typer.Option(
+        True,
+        "--drawings/--no-drawings",
+        help="Export 2D orthographic SVG and DXF setup sheets",
+    ),
+    strict: bool = True,
+):
+  """Run live B-Rep NestWorks C500 DFM check, twin parameter check, and setup sheet export."""
+  has_4ax = fourth_axis if isinstance(fourth_axis, bool) else True
+  emit_drawings = drawings if isinstance(drawings, bool) else True
+  report = run_c500_dfm_check(
+      has_fourth_axis=has_4ax,
+      config_path=Path(c500_path),
+      include_twin_params=True,
+  )
+  out_path = Path(output_dir)
+  report_json = report.to_json(out_path / "c500_dfm_report.json")
+
+  axis_label = "4th-Axis ACTIVE" if report.has_fourth_axis else "3-Axis FALLBACK"
+  audit_table = Table(
+      title=f"Live B-Rep NestWorks C500 DFM Audit ({axis_label})",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  audit_table.add_column("Part ID", style="magenta")
+  audit_table.add_column("Mode", style="yellow")
+  audit_table.add_column("Measured XYZ (mm)", style="green")
+  audit_table.add_column("Min Cyl R (mm)", style="cyan")
+  audit_table.add_column("Watertight", style="green")
+  audit_table.add_column("Fallback", style="white")
+  audit_table.add_column("Status", style="bold green")
+  for item in report.part_audits:
+    dx, dy, dz = item.measured_dims_mm
+    audit_table.add_row(
+        item.part_id,
+        item.active_mode,
+        f"{dx:.1f} x {dy:.1f} x {dz:.1f}",
+        f"{item.min_cylindrical_radius_mm:.2f} (>= {item.min_allowed_corner_radius_mm:.1f})",
+        str(item.watertight),
+        item.fallback_reason if item.uses_fallback else "-",
+        _status_badge(item.is_valid),
+    )
+  rich.print(audit_table)
+
+  if report.twin_params is not None:
+    tp = report.twin_params
+    twin_table = Table(
+        title="Extracted 1:1 DFM Full-Twin Physics Parameters",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    twin_table.add_column("Twin Metric", style="cyan")
+    twin_table.add_column("Measured CAD Value", style="bold green")
+    twin_table.add_row("Total B-Rep Solids / Mass (Dry / Wet)", f"{tp.total_part_count} solids | {tp.dry_mass_kg:.3f} / {tp.wet_mass_kg:.3f} kg")
+    twin_table.add_row("Reciprocating / Rotating Mass", f"{tp.reciprocating_mass_kg:.4f} / {tp.rotating_mass_kg:.4f} kg")
+    twin_table.add_row("Effective Balance Factor", f"{tp.effective_balance_factor * 100.0:.1f} %")
+    twin_table.add_row("Flywheel Mass / CAD Inertia", f"{tp.flywheel_mass_kg:.3f} kg / {tp.flywheel_cad_inertia_kg_m2 * 1000.0:.2f} x 10^-3 kg*m^2")
+    twin_table.add_row("Chamber Dome / Clearance / CR", f"{tp.dome_volume_cm3:.2f} / {tp.clearance_volume_cm3:.2f} cm^3 | {tp.compression_ratio:.2f}:1")
+    twin_table.add_row("Sump Oil Pool / BDC Immersion", f"{tp.oil_volume_liters:.3f} L / {tp.bdc_dipper_immersion_mm:.1f} mm")
+    twin_table.add_row("Intake / Exhaust / Retainer Mass", f"{tp.valve_intake_mass_kg * 1000:.1f} / {tp.valve_exhaust_mass_kg * 1000:.1f} / {tp.retainer_mass_kg * 1000:.1f} g")
+    rich.print(twin_table)
+
+  if emit_drawings:
+    manifest = export_c500_setup_sheets(
+        output_dir=out_path / "drawings",
+        has_fourth_axis=report.has_fourth_axis,
+    )
+    rich.print(f"[green]Exported {len(manifest.sheets)} 2D SVG + DXF C500 setup sheets to: {manifest.output_dir}[/green]")
+
+  rich.print(f"[green]Saved live B-Rep DFM audit report to: {report_json}[/green]")
+  if report.violations:
+    for err in report.violations:
+      rich.print(f"[bold red]DFM Violation:[/bold red] {err}")
+
+  if strict and not report.all_passed:
     raise typer.Exit(code=1)
 
 
@@ -885,8 +1035,8 @@ def cfd_port_flow(
 @app.command(name="cfd-combustion")
 def cfd_combustion(
     start_ca: float = -180.0,
-    end_ca: float = 5.0,
-    spark_ca: float = -22.0,
+    end_ca: float = 10.0,
+    spark_ca: float = -18.0,
     output_dir: str = "outputs/cfd",
 ):
   """Run 3D moving-mesh in-cylinder combustion simulation via OpenFOAM XiEngineFoam."""
@@ -933,16 +1083,17 @@ def cfd_combustion(
 @app.command(name="cfd-cht-cooling")
 def cfd_cht_cooling(
     ambient_temp_c: float = 27.0,
-    fin_h_coeff: float = 75.0,
+    fin_h_coeff: float = 105.0,
     output_dir: str = "outputs/cfd",
 ):
   """Run Conjugate Heat Transfer (CHT) air-fin thermal cooling simulation via OpenFOAM laplacianFoam."""
   rich.print(f"[cyan]Running air-fin thermal cooling CHT simulation (T_amb = {ambient_temp_c:.1f}°C, h = {fin_h_coeff:.1f} W/m²K)...[/cyan]")
 
+  _, _, _, _, tb = _solve_default_thermal_balance()
   cfg = ChtCoolingConfig(
       ambient_temp_k=ambient_temp_c + 273.15,
       fin_h_coeff=fin_h_coeff,
-  )
+  ).with_splash_cooling(tb)
   out_path = Path(output_dir)
   case_dir = out_path / "case_cht"
   res = run_cht_simulation(config=cfg, case_dir=case_dir)
@@ -1030,6 +1181,9 @@ def fea_piston(
       peak_pressure_mpa=peak_pressure_bar / 10.0,
       crown_temp_c=crown_temp_c,
   )
+  if crown_temp_c == 250.0:
+    _, _, _, _, tb = _solve_default_thermal_balance()
+    cfg = cfg.with_splash_cooling(tb)
   res = run_piston_fea(config=cfg, output_dir=output_dir)
 
   table = Table(
@@ -1102,11 +1256,11 @@ def fea_conrod(
 
   table.add_row("Mesh Density", f"{res.mesh_stats['num_nodes']:,} nodes / {res.mesh_stats['num_elements']:,} tets (C3D10)", "Quadratic", "[bold green]PASS[/bold green]")
   table.add_row("LC-3A Firing Compressive Force", f"{res.lc3a_compression.applied_force_kn:.2f} kN", "0° CA Peak", "LOAD")
-  table.add_row("LC-3A P95 Von Mises Stress", f"{res.lc3a_compression.p95_von_mises_mpa:.1f} MPa", "< 850.0 MPa", _status_badge(res.lc3a_compression.is_pass))
+  table.add_row("LC-3A P95 Von Mises Stress", f"{res.lc3a_compression.p95_von_mises_mpa:.1f} MPa", f"< {ALUMINUM_7075_T6.yield_strength_mpa / cfg.min_yield_safety_factor:.1f} MPa", _status_badge(res.lc3a_compression.is_pass))
   table.add_row("LC-3A Compressive Yield SF", f"{res.lc3a_compression.yield_safety_factor:.2f}", ">= 1.60", _status_badge(res.lc3a_compression.is_pass))
   table.add_row("---", "---", "---", "---")
   table.add_row("LC-3B Redline Inertia Tensile Force", f"{res.lc3b_tension.applied_force_kn:.2f} kN", f"@ {cfg.redline_rpm:.0f} RPM", "LOAD")
-  table.add_row("LC-3B P95 Von Mises Stress", f"{res.lc3b_tension.p95_von_mises_mpa:.1f} MPa", "< 850.0 MPa", _status_badge(res.lc3b_tension.is_pass))
+  table.add_row("LC-3B P95 Von Mises Stress", f"{res.lc3b_tension.p95_von_mises_mpa:.1f} MPa", f"< {ALUMINUM_7075_T6.yield_strength_mpa / cfg.min_yield_safety_factor:.1f} MPa", _status_badge(res.lc3b_tension.is_pass))
   table.add_row("LC-3B Tensile Yield SF", f"{res.lc3b_tension.yield_safety_factor:.2f}", ">= 1.60", _status_badge(res.lc3b_tension.is_pass))
   table.add_row("---", "---", "---", "---")
   table.add_row("Euler Column Buckling Critical Load", f"{res.critical_buckling_load_kn:.1f} kN", f"> {res.lc3a_compression.applied_force_kn*2.5:.1f} kN", _status_badge(is_buckle_crit_ok))
@@ -1252,19 +1406,24 @@ def generate_report(
         output_json_path=models_dir / "conrod_lc3a_stress.json",
         title="Connecting Rod LC-3A Firing Compression",
         component_name="Connecting Rod",
-        yield_strength_mpa=850.0,
+        yield_strength_mpa=ALUMINUM_7075_T6.yield_strength_mpa,
     )
 
   # 3. Generate interactive HTML5 dashboard
+  dfm_report_path = out_path.parent / "dfm" / "c500_dfm_report.json"
   html_path = out_path / "engineering_dashboard.html"
   generate_interactive_dashboard(
       output_html_path=html_path,
       models_dir=models_dir,
+      dfm_report_json=dfm_report_path,
   )
 
   # 4. Generate Markdown summary
   md_path = out_path / "summary.md"
-  generate_markdown_summary(output_md_path=md_path)
+  generate_markdown_summary(
+      output_md_path=md_path,
+      dfm_report_json=dfm_report_path,
+  )
 
   elapsed = time.time() - t0
   rich.print(f"[bold green]Report generation completed in {elapsed:.2f} s![/bold green]")
@@ -1290,11 +1449,15 @@ def run_all(
   lub(config_path="config/engine_specs.yaml")
   valvetrain(config_path="config/engine_specs.yaml")
   dynamics(config_path="config/engine_specs.yaml")
-  bom(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/bom")
+  bom(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/bom", fourth_axis=None)
 
   # Phase 2: Parametric B-Rep CAD
   rich.print("\n[bold yellow]>>> Step 2: Parametric Solid CAD Generation (STEP)...[/bold yellow]")
   cad(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/cad")
+
+  # Phase 2B: NestWorks C500 DFM Verification & 2D Setup Sheets
+  rich.print("\n[bold yellow]>>> Step 2B: NestWorks C500 Live B-Rep DFM Check & 2D Setup Sheets...[/bold yellow]")
+  dfm_check(output_dir=f"{output_dir}/dfm", fourth_axis=None, drawings=True)
 
   # Phase 3: CFD, Combustion, CHT, and Closed-Loop Calibration
   rich.print("\n[bold yellow]>>> Step 3: CFD & Moving-Mesh Combustion...[/bold yellow]")

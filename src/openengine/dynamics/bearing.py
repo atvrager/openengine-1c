@@ -419,3 +419,109 @@ class HydrodynamicBearing:
         is_hydrodynamic=is_hydro,
         is_safe=is_safe,
     )
+
+
+NEEDLE_LIFE_EXPONENT: float = 10.0 / 3.0
+BALL_LIFE_EXPONENT: float = 3.0
+MILLION_REVS: float = 1.0e6
+MINUTES_PER_HOUR: float = 60.0
+MIN_EQUIV_LOAD_N: float = 1.0
+MIN_STATIC_SF: float = 0.85
+HALF_SHARE_FACTOR: float = 0.5
+DEFAULT_MIN_L10_HOURS: float = 150.0
+
+
+@dataclass(frozen=True, slots=True)
+class RollingBearingSpec:
+  """ISO 281 catalog specification for a rolling-element engine bearing."""
+
+  name: str
+  sku: str
+  bearing_type: str
+  bore_diameter_m: float
+  outer_diameter_m: float
+  width_m: float
+  dynamic_load_rating_n: float
+  static_load_rating_n: float
+  life_exponent: float
+  load_share_factor: float = 1.0
+  min_l10_hours: float = DEFAULT_MIN_L10_HOURS
+
+
+@dataclass(frozen=True, slots=True)
+class RollingBearingLifeReport:
+  """ISO 281 L10 / L10h fatigue life and static safety assessment."""
+
+  bearing_name: str
+  sku: str
+  bearing_type: str
+  rpm: float
+  peak_radial_load_n: float
+  equivalent_dynamic_load_n: float
+  dynamic_load_rating_n: float
+  static_safety_factor: float
+  l10_million_revs: float
+  l10_hours: float
+  is_safe: bool
+
+
+CRANKPIN_NEEDLE_NKS28_SPEC: RollingBearingSpec = RollingBearingSpec(
+    name="Crankpin Needle Roller (INA NKS28-XL)",
+    sku="INA-NKS28-XL",
+    bearing_type="needle_roller",
+    bore_diameter_m=0.028,
+    outer_diameter_m=0.042,
+    width_m=0.020,
+    dynamic_load_rating_n=28500.0,
+    static_load_rating_n=34500.0,
+    life_exponent=NEEDLE_LIFE_EXPONENT,
+    load_share_factor=1.0,
+    min_l10_hours=DEFAULT_MIN_L10_HOURS,
+)
+
+MAIN_BALL_6206_SPEC: RollingBearingSpec = RollingBearingSpec(
+    name="Main Journal Ball Bearing (6206-2Z)",
+    sku="5972K342",
+    bearing_type="deep_groove_ball",
+    bore_diameter_m=0.030,
+    outer_diameter_m=0.062,
+    width_m=0.016,
+    dynamic_load_rating_n=19500.0,
+    static_load_rating_n=11300.0,
+    life_exponent=BALL_LIFE_EXPONENT,
+    load_share_factor=HALF_SHARE_FACTOR,
+    min_l10_hours=DEFAULT_MIN_L10_HOURS,
+)
+
+
+def analyze_rolling_bearing_life(
+    spec: RollingBearingSpec,
+    rpm: float,
+    radial_load_n: np.ndarray,
+) -> RollingBearingLifeReport:
+  """Evaluate ISO 281 rolling-element equivalent load, L10 life, and static safety."""
+  loads = np.abs(np.asarray(radial_load_n, dtype=float)) * spec.load_share_factor
+  peak_load = float(np.max(loads)) if len(loads) > 0 else MIN_EQUIV_LOAD_N
+  p_exp = spec.life_exponent
+  mean_pow = float(np.mean(np.power(np.maximum(MIN_EQUIV_LOAD_N, loads), p_exp)))
+  p_eq = max(MIN_EQUIV_LOAD_N, mean_pow ** (1.0 / p_exp))
+
+  l10_mrev = float((spec.dynamic_load_rating_n / p_eq) ** p_exp)
+  revs_per_hour = max(1.0, float(rpm)) * MINUTES_PER_HOUR
+  l10_hours = (l10_mrev * MILLION_REVS) / revs_per_hour
+  static_sf = float(spec.static_load_rating_n / max(MIN_EQUIV_LOAD_N, peak_load))
+  is_safe = (l10_hours >= spec.min_l10_hours) and (static_sf >= MIN_STATIC_SF)
+
+  return RollingBearingLifeReport(
+      bearing_name=spec.name,
+      sku=spec.sku,
+      bearing_type=spec.bearing_type,
+      rpm=float(rpm),
+      peak_radial_load_n=peak_load,
+      equivalent_dynamic_load_n=float(p_eq),
+      dynamic_load_rating_n=spec.dynamic_load_rating_n,
+      static_safety_factor=static_sf,
+      l10_million_revs=l10_mrev,
+      l10_hours=float(l10_hours),
+      is_safe=is_safe,
+  )

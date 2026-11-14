@@ -9,6 +9,10 @@ from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Union
 
+from openengine.cad.connecting_rod import DEFAULT_CENTER_TO_CENTER_M
+from openengine.cad.crankshaft import DEFAULT_STROKE_M
+from openengine.cad.cylinder_block import DEFAULT_BORE_M
+from openengine.cad.twin_metrics import get_cad_compression_ratio, get_cad_sump_oil_volume_l
 from openengine.reporting.gltf_export import (
     export_cad_models_to_gltf,
     export_fea_stress_to_webgl,
@@ -39,6 +43,7 @@ def generate_interactive_dashboard(
     piston_fea_json: Union[str, Path] = "outputs/fea/piston/piston_fea_results.json",
     conrod_fea_json: Union[str, Path] = "outputs/fea/conrod/conrod_fea_results.json",
     gasket_fea_json: Union[str, Path] = "outputs/fea/gasket/head_gasket_fea_results.json",
+    dfm_report_json: Union[str, Path] = "outputs/dfm/c500_dfm_report.json",
 ) -> str:
   """Generate a single-file, self-contained interactive 3D WebGL (Three.js) & Plotly dashboard.
 
@@ -70,10 +75,10 @@ def generate_interactive_dashboard(
       {
           "baseline": {"imep_bar": 15.14, "indicated_power_kw": 13.60, "p_max_bar": 73.83, "thermal_efficiency": 0.504, "isfc_g_per_kwh": 180.5},
           "calibrated": {"imep_bar": 11.98, "indicated_power_kw": 10.77, "p_max_bar": 29.26, "thermal_efficiency": 0.399, "isfc_g_per_kwh": 227.9},
-          "calibrated_wiebe_a": 1.818,
-          "calibrated_wiebe_m": 3.018,
-          "calibrated_wiebe_duration_deg": 73.6,
-          "calibrated_wiebe_soc_deg": -22.0,
+          "calibrated_wiebe_a": 1.667,
+          "calibrated_wiebe_m": 2.458,
+          "calibrated_wiebe_duration_deg": 76.7,
+          "calibrated_wiebe_soc_deg": -18.0,
           "calibrated_intake_cd": 0.291,
           "calibrated_wall_temp_k": 443.0,
       },
@@ -82,9 +87,9 @@ def generate_interactive_dashboard(
   piston_data = load_json_or_default(
       [piston_fea_json, "outputs/fea/piston/piston_fea_results.json", "outputs/fea/piston_fea_results.json"],
       {
-          "lc1_mechanical": {"max_von_mises_mpa": 339.1, "p95_von_mises_mpa": 188.3, "yield_safety_factor": 1.67, "is_pass": True, "max_displacement_mm": 0.2144},
+          "lc1_mechanical": {"max_von_mises_mpa": 339.1, "p95_von_mises_mpa": 188.3, "yield_safety_factor": 2.76, "is_pass": True, "max_displacement_mm": 0.2144},
           "lc2_thermo_mechanical": {"max_radial_growth_mm": 0.0857, "is_pass": True},
-          "hot_skirt_clearance_mm": 0.0405,
+          "hot_skirt_clearance_mm": 0.0257,
           "is_clearance_safe": True,
           "is_structural_safe": True,
       },
@@ -93,11 +98,11 @@ def generate_interactive_dashboard(
   conrod_data = load_json_or_default(
       [conrod_fea_json, "outputs/fea/conrod/conrod_fea_results.json", "outputs/fea/conrod_fea_results.json"],
       {
-          "lc3a_compression": {"applied_force_kn": 28.33, "p95_von_mises_mpa": 258.9, "yield_safety_factor": 3.28, "is_pass": True},
-          "lc3b_tension": {"applied_force_kn": 2.54, "p95_von_mises_mpa": 23.2, "yield_safety_factor": 36.63, "is_pass": True},
+          "lc3a_compression": {"applied_force_kn": 28.33, "p95_von_mises_mpa": 258.9, "yield_safety_factor": 3.33, "is_pass": True},
+          "lc3b_tension": {"applied_force_kn": 2.54, "p95_von_mises_mpa": 23.2, "yield_safety_factor": 22.87, "is_pass": True},
           "critical_buckling_load_kn": 295.0,
-          "buckling_safety_factor": 10.41,
-          "fatigue_safety_factor": 3.40,
+          "buckling_safety_factor": 12.94,
+          "fatigue_safety_factor": 1.84,
           "is_buckling_safe": True,
           "is_fatigue_safe": True,
           "is_structural_safe": True,
@@ -129,6 +134,11 @@ def generate_interactive_dashboard(
           "is_thermal_safe": True,
       },
   )
+
+  dfm_data = load_json_or_default([dfm_report_json, "outputs/dfm/c500_dfm_report.json"], {})
+  twin_params = dfm_data.get("twin_params") or {}
+  total_part_count = int(twin_params.get("total_part_count", 116))
+  oil_vol_l = float(twin_params.get("oil_volume_liters", get_cad_sump_oil_volume_l()))
 
   # 2. Load analytical kinematic trajectory artifact
   traj_path = m_dir / "kinematic_trajectory.json"
@@ -175,23 +185,23 @@ def generate_interactive_dashboard(
       conrod_stress_json_str = f.read()
 
   # 5. Build 720° thermodynamic trace for Plotly
-  # Cylinder kinematics: bore = 68 mm, stroke = 54 mm, r = 27 mm, L = 108 mm
-  r_m = 0.027
-  l_m = 0.108
+  # Cylinder kinematics driven by live CAD constants and extracted twin CR
+  r_m = 0.5 * DEFAULT_STROKE_M
+  l_m = DEFAULT_CENTER_TO_CENTER_M
   lambda_val = r_m / l_m
-  b_m = 0.068
+  b_m = DEFAULT_BORE_M
   v_disp_cm3 = (math.pi / 4.0) * (b_m**2) * (2.0 * r_m) * 1.0e6
-  cr = 9.80
+  cr = float(twin_params.get("compression_ratio", get_cad_compression_ratio()))
   v_clearance_cm3 = v_disp_cm3 / (cr - 1.0)
 
   theta_deg_arr = []
   volume_cm3_arr = []
   pressure_bar_arr = []
 
-  w_soc = closed_loop_data.get("calibrated_wiebe_soc_deg", -22.0)
-  w_dur = closed_loop_data.get("calibrated_wiebe_duration_deg", 73.6)
-  w_a = closed_loop_data.get("calibrated_wiebe_a", 1.818)
-  w_m = closed_loop_data.get("calibrated_wiebe_m", 3.018)
+  w_soc = closed_loop_data.get("calibrated_wiebe_soc_deg", -18.0)
+  w_dur = closed_loop_data.get("calibrated_wiebe_duration_deg", 76.7)
+  w_a = closed_loop_data.get("calibrated_wiebe_a", 1.667)
+  w_m = closed_loop_data.get("calibrated_wiebe_m", 2.458)
   p_max_calib = closed_loop_data.get("calibrated", {}).get("p_max_bar", 29.26)
 
   for th in range(0, 721, 2):
@@ -438,7 +448,7 @@ def generate_interactive_dashboard(
   <header>
     <div>
       <h1>OpenEngine-1C Multi-Physics Dashboard</h1>
-      <p style="color: var(--text-muted); font-size: 13px;">Single-Cylinder 4-Stroke SOHC Engine • 68.0mm Bore × 54.0mm Stroke (196.1 cm³)</p>
+      <p style="color: var(--text-muted); font-size: 13px;">Single-Cylinder 4-Stroke SOHC Engine • {b_m * 1000.0:.1f}mm Bore × {2.0 * r_m * 1000.0:.1f}mm Stroke ({v_disp_cm3:.1f} cm³)</p>
     </div>
     <div style="display: flex; gap: 8px;">
       <span class="badge badge-pass">Score: 8 / 8 PASS</span>
@@ -487,7 +497,7 @@ def generate_interactive_dashboard(
             <button id="layer-valvetrain-btn" class="btn btn-sm btn-active" title="Toggle SOHC Valvetrain">Valvetrain</button>
             <button id="layer-covers-btn" class="btn btn-sm btn-active" title="Toggle Covers & Aux">Covers</button>
             <button id="layer-cots-btn" class="btn btn-sm btn-active" title="Toggle McMaster COTS Hardware">COTS</button>
-            <button id="layer-oil-btn" class="btn btn-sm btn-active" title="Toggle 0.65 L Oil Pool">Oil</button>
+            <button id="layer-oil-btn" class="btn btn-sm btn-active" title="Toggle {oil_vol_l:.2f} L Oil Pool">Oil</button>
           </div>
         </div>
 
@@ -593,7 +603,7 @@ def generate_interactive_dashboard(
             <td><strong>Valvetrain</strong></td>
             <td>Valve Float Margin @ Redline</td>
             <td>&gt; 30.0%</td>
-            <td><strong>+32.1% (8400 RPM)</strong></td>
+            <td><strong>+32.2% (8400 RPM)</strong></td>
             <td>Safe</td>
             <td><span class="badge badge-pass">PASS</span></td>
           </tr>
@@ -601,7 +611,7 @@ def generate_interactive_dashboard(
             <td><strong>CAD Geometry</strong></td>
             <td>B-Rep Watertight Validity</td>
             <td>100% Watertight</td>
-            <td><strong>1 Solid Manifold</strong></td>
+            <td><strong>{total_part_count} Solid B-Rep Twin</strong></td>
             <td>Watertight</td>
             <td><span class="badge badge-pass">PASS</span></td>
           </tr>
@@ -617,32 +627,32 @@ def generate_interactive_dashboard(
             <td><strong>FEA Piston</strong></td>
             <td>LC-1 Yield Safety Factor</td>
             <td>&ge; 1.60</td>
-            <td><strong>{piston_data.get('lc1_mechanical', {}).get('yield_safety_factor', 1.67):.2f}</strong></td>
-            <td>+4.4%</td>
+            <td><strong>{piston_data.get('lc1_mechanical', {}).get('yield_safety_factor', 2.76):.2f}</strong></td>
+            <td>+72.5%</td>
             <td><span class="badge badge-pass">PASS</span></td>
           </tr>
           <tr>
             <td><strong>FEA Piston</strong></td>
             <td>Hot Skirt Running Clearance</td>
             <td>&ge; 20.0 µm</td>
-            <td><strong>{piston_data.get('hot_skirt_clearance_mm', 0.0405)*1000.0:.1f} µm</strong></td>
-            <td>+102%</td>
+            <td><strong>{piston_data.get('hot_skirt_clearance_mm', 0.0257)*1000.0:.1f} µm</strong></td>
+            <td>+28.5%</td>
             <td><span class="badge badge-pass">PASS</span></td>
           </tr>
           <tr>
             <td><strong>FEA Con-Rod</strong></td>
             <td>Column Buckling Safety Factor</td>
             <td>&ge; 2.50</td>
-            <td><strong>{conrod_data.get('buckling_safety_factor', 10.41):.2f}</strong></td>
-            <td>+316%</td>
+            <td><strong>{conrod_data.get('buckling_safety_factor', 12.94):.2f}</strong></td>
+            <td>+418%</td>
             <td><span class="badge badge-pass">PASS</span></td>
           </tr>
           <tr>
             <td><strong>FEA Con-Rod</strong></td>
             <td>Goodman Fatigue Safety Factor</td>
             <td>&ge; 1.50</td>
-            <td><strong>{conrod_data.get('fatigue_safety_factor', 3.40):.2f}</strong></td>
-            <td>+127%</td>
+            <td><strong>{conrod_data.get('fatigue_safety_factor', 1.84):.2f}</strong></td>
+            <td>+22.7%</td>
             <td><span class="badge badge-pass">PASS</span></td>
           </tr>
           <tr>
