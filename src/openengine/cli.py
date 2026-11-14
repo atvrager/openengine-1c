@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import time
+from typing import Optional
 from build123d import export_step
 import numpy as np
 from openengine.cad import (
@@ -30,6 +31,7 @@ from openengine.cfd import (
     run_combustion_simulation,
     run_port_flow_sweep,
 )
+from openengine.dfm import export_bom_artifacts, resolve_bom_from_files
 from openengine.dynamics import (
     BearingGeometry,
     FlywheelDimensions,
@@ -497,6 +499,105 @@ def dynamics(
   brg_table.add_row("Minimum Oil Film Thickness (h_min)", f"{bearing_rep.min_film_thickness_um:.2f} µm")
   brg_table.add_row("Lubrication Lambda Ratio (h_min / R_q)", f"{bearing_rep.min_lambda_ratio:.2f} (Full Hydrodynamic: {bearing_rep.is_hydrodynamic})")
   rich.print(brg_table)
+
+
+@app.command()
+def bom(
+    config_path: str = "config/engine_specs.yaml",
+    c500_path: str = "config/c500_constraints.yaml",
+    bom_path: str = "config/mcmaster_bom.yaml",
+    output_dir: str = "outputs/bom",
+    fourth_axis: Optional[bool] = typer.Option(
+        None,
+        "--fourth-axis/--no-fourth-axis",
+        help="Override C500 4th-axis rotary availability",
+    ),
+    strict: bool = True,
+):
+  """Generate C500 DFM envelope audit, offline McMaster-Carr BoM, and Order-Pad export."""
+  report = resolve_bom_from_files(
+      engine_path=Path(config_path),
+      c500_path=Path(c500_path),
+      bom_path=Path(bom_path),
+      has_fourth_axis_override=fourth_axis,
+  )
+  export_paths = export_bom_artifacts(report, output_dir=Path(output_dir))
+
+  axis_label = "4th-Axis ACTIVE" if report.has_fourth_axis else "3-Axis FALLBACK"
+  ledger_table = Table(
+      title=f"NestWorks C500 CNC Envelope & Part Ledger ({axis_label})",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  ledger_table.add_column("Component", style="magenta")
+  ledger_table.add_column("Active Mode", style="yellow")
+  ledger_table.add_column("Fallback Strategy", style="white")
+  ledger_table.add_column("Status", style="bold green")
+  for chk in report.c500_checks:
+    fallback_note = chk.fallback_reason if chk.uses_fallback else "-"
+    ledger_table.add_row(
+        chk.part_id,
+        chk.active_mode,
+        fallback_note,
+        _status_badge(chk.is_valid),
+    )
+  rich.print(ledger_table)
+
+  bom_table = Table(
+      title=f"Costed Bill of Materials ({axis_label})",
+      show_header=True,
+      header_style="bold blue",
+  )
+  bom_table.add_column("Item", style="cyan")
+  bom_table.add_column("Channel", style="magenta")
+  bom_table.add_column("SKU [Tier]", style="yellow")
+  bom_table.add_column("Direct URL / Selection Hint", style="white")
+  bom_table.add_column("Order", justify="right", style="green")
+  bom_table.add_column("Cost USD", justify="right", style="bold green")
+  bom_table.add_column("Fit", style="cyan")
+  for item in report.items:
+    nav = item.url if item.url else item.selection_hint
+    if item.url and item.sku_status == "anchor_table":
+      nav = f"{item.url} | {item.selection_hint}"
+    bom_table.add_row(
+        item.item_id,
+        item.channel,
+        f"{item.sku} [{item.sku_status}]",
+        nav,
+        f"{item.packs_to_order}x (qty {item.required_qty})",
+        f"${item.extended_cost_usd:.2f}",
+        _status_badge(item.is_interface_valid),
+    )
+  rich.print(bom_table)
+
+  val = report.validation
+  rollup_table = Table(
+      title="Sourcing Channel Cost Rollup & Order-Pad Export",
+      show_header=True,
+      header_style="bold green",
+  )
+  rollup_table.add_column("Channel / Export Artifact", style="cyan")
+  rollup_table.add_column("Summary", style="bold green")
+  for ch_name, ch_cost in val.channel_costs_usd.items():
+    rollup_table.add_row(f"Channel: {ch_name}", f"${ch_cost:.2f}")
+  rollup_table.add_row(
+      "SKU Resolution Breakdown",
+      f"{val.verified_exact_mcmaster_count} exact Order-Pad | "
+      f"{val.anchor_table_mcmaster_count} anchor table | "
+      f"{val.powersports_cots_count} COTS",
+  )
+  rollup_table.add_row("Total Estimated Hardware Cost", f"${val.total_cost_usd:.2f} USD")
+  rollup_table.add_row("McMaster Order-Pad Paste File", str(export_paths.order_pad_txt))
+  rollup_table.add_row("Full Costed CSV", str(export_paths.costed_csv))
+  rollup_table.add_row("JSON Verification Report", str(export_paths.summary_json))
+  rich.print(rollup_table)
+
+  if val.violations:
+    for err in val.violations:
+      rich.print(f"[bold red]DFM/BoM Violation:[/bold red] {err}")
+
+  if strict and (not val.is_valid or any(not chk.is_valid for chk in report.c500_checks)):
+    raise typer.Exit(code=1)
 
 
 @app.command()
@@ -1127,12 +1228,13 @@ def run_all(
   rich.print("[bold cyan]====================================================================[/bold cyan]")
   t_total_start = time.time()
 
-  # Phase 1: 0D Thermo, Lubrication & Valvetrain Dynamics
-  rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics, Lubrication & Valvetrain Dynamics...[/bold yellow]")
+  # Phase 1: 0D Thermo, Lubrication & Valvetrain Dynamics + C500 BoM
+  rich.print("\n[bold yellow]>>> Step 1: 0D/1D Thermodynamics, Lubrication, Dynamics & C500 BoM...[/bold yellow]")
   thermo(config_path="config/engine_specs.yaml")
   lub(config_path="config/engine_specs.yaml")
   valvetrain(config_path="config/engine_specs.yaml")
   dynamics(config_path="config/engine_specs.yaml")
+  bom(config_path="config/engine_specs.yaml", output_dir=f"{output_dir}/bom")
 
   # Phase 2: Parametric B-Rep CAD
   rich.print("\n[bold yellow]>>> Step 2: Parametric Solid CAD Generation (STEP)...[/bold yellow]")

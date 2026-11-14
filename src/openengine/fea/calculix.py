@@ -65,6 +65,101 @@ STEEL_GRADE_10_9 = MaterialProperties(
     endurance_limit_mpa=420.0,
 )
 
+ALUMINUM_7075_T6 = MaterialProperties(
+    name="ALUMINUM_7075_T6",
+    youngs_modulus_mpa=71700.0,
+    poissons_ratio=0.33,
+    density_tonne_mm3=2.81e-9,
+    thermal_expansion_coeff=23.6e-6,
+    thermal_conductivity_w_mm_k=0.130,
+    yield_strength_mpa=503.0,
+    ultimate_strength_mpa=572.0,
+    endurance_limit_mpa=159.0,
+)
+
+ALUMINUM_6061_T6 = MaterialProperties(
+    name="ALUMINUM_6061_T6",
+    youngs_modulus_mpa=68900.0,
+    poissons_ratio=0.33,
+    density_tonne_mm3=2.70e-9,
+    thermal_expansion_coeff=23.6e-6,
+    thermal_conductivity_w_mm_k=0.167,
+    yield_strength_mpa=276.0,
+    ultimate_strength_mpa=310.0,
+    endurance_limit_mpa=96.5,
+)
+
+STEEL_1144_STRESSPROOF = MaterialProperties(
+    name="STEEL_1144_STRESSPROOF",
+    youngs_modulus_mpa=200000.0,
+    poissons_ratio=0.29,
+    density_tonne_mm3=7.85e-9,
+    thermal_expansion_coeff=11.5e-6,
+    thermal_conductivity_w_mm_k=0.050,
+    yield_strength_mpa=690.0,
+    ultimate_strength_mpa=790.0,
+    endurance_limit_mpa=345.0,
+)
+
+STEEL_4140_PREHARD = MaterialProperties(
+    name="STEEL_4140_PREHARD",
+    youngs_modulus_mpa=205000.0,
+    poissons_ratio=0.29,
+    density_tonne_mm3=7.85e-9,
+    thermal_expansion_coeff=12.2e-6,
+    thermal_conductivity_w_mm_k=0.0426,
+    yield_strength_mpa=655.0,
+    ultimate_strength_mpa=1020.0,
+    endurance_limit_mpa=420.0,
+)
+
+BRONZE_SAE_660 = MaterialProperties(
+    name="BRONZE_SAE_660",
+    youngs_modulus_mpa=100000.0,
+    poissons_ratio=0.34,
+    density_tonne_mm3=8.91e-9,
+    thermal_expansion_coeff=18.0e-6,
+    thermal_conductivity_w_mm_k=0.059,
+    yield_strength_mpa=140.0,
+    ultimate_strength_mpa=240.0,
+    endurance_limit_mpa=110.0,
+)
+
+DOM_STEEL_A513_T5 = MaterialProperties(
+    name="DOM_STEEL_A513_T5",
+    youngs_modulus_mpa=200000.0,
+    poissons_ratio=0.29,
+    density_tonne_mm3=7.85e-9,
+    thermal_expansion_coeff=11.7e-6,
+    thermal_conductivity_w_mm_k=0.052,
+    yield_strength_mpa=485.0,
+    ultimate_strength_mpa=550.0,
+    endurance_limit_mpa=275.0,
+)
+
+MATERIAL_CATALOG: Dict[str, MaterialProperties] = {
+    mat.name: mat
+    for mat in (
+        ALUMINUM_4032_T6,
+        STEEL_4340,
+        STEEL_GRADE_10_9,
+        ALUMINUM_7075_T6,
+        ALUMINUM_6061_T6,
+        STEEL_1144_STRESSPROOF,
+        STEEL_4140_PREHARD,
+        BRONZE_SAE_660,
+        DOM_STEEL_A513_T5,
+    )
+}
+
+
+def get_material_properties(name: str) -> MaterialProperties:
+  """Return calibrated MaterialProperties for a standard catalog alloy name."""
+  key = name.strip().upper()
+  if key not in MATERIAL_CATALOG:
+    raise KeyError(f"Unknown FEA material specification: {name}")
+  return MATERIAL_CATALOG[key]
+
 
 @dataclass
 class FeaNodalResults:
