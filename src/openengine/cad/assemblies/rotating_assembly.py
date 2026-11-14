@@ -29,6 +29,7 @@ from openengine.cad.crankshaft import (
     generate_crankshaft,
 )
 from openengine.cad.piston import generate_piston
+from openengine.cad.step_export import style_named_parts_as_compound
 
 KG_TO_G: float = 1000.0
 TINY_MASS_EPS_G: float = 1.0e-9
@@ -186,8 +187,12 @@ def build_rotating_assembly_parts(crank_angle_deg: float = 0.0) -> Dict[str, Par
 
 
 def generate_rotating_assembly(crank_angle_deg: float = 0.0) -> Compound:
-  """Assemble the rotating & reciprocating sub-assembly as a single Compound."""
-  return Compound(children=list(build_rotating_assembly_parts(crank_angle_deg).values()))
+  """Assemble the rotating & reciprocating sub-assembly as a styled Compound."""
+  return style_named_parts_as_compound(
+      "rotating_assembly",
+      build_rotating_assembly_parts(crank_angle_deg),
+      ROTATING_MATERIALS.__getitem__,
+  )
 
 
 def _conrod_cg_split_masses_g(parts: Dict[str, Part]) -> tuple[float, float, float]:

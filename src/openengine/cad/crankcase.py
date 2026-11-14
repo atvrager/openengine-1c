@@ -28,6 +28,8 @@ from build123d import (
     extrude,
 )
 
+from openengine.cad.step_export import heal_part_edges
+
 CRANK_AXIS_Z_MM: float = -159.0
 BLOCK_BASE_Z_MM: float = -85.0
 SUMP_SPLIT_Z_MM: float = -241.0
@@ -92,7 +94,8 @@ SPLIT_DOWEL_XZ_MM: Tuple[Tuple[float, float], ...] = (
     (-78.0, -159.0),
 )
 SPLIT_CB_START_Y_MM: float = -21.0
-SPLIT_TAP_DEPTH_Y_MM: float = 22.0
+SPLIT_TAP_DEPTH_Y_MM: float = 20.0
+SPLIT_TAP_OVERSHOOT_Y_MM: float = 1.0
 DOWEL_HALF_DEPTH_Y_MM: float = 9.0
 
 SUMP_BOLT_XY_MM: Tuple[Tuple[float, float], ...] = (
@@ -298,9 +301,11 @@ def generate_crankcase_right(params: Optional[CrankcaseParams] = None) -> Part:
       Box(TIMING_BAY_WIDTH_X_MM, timing_d, timing_h + CUT_MARGIN_MM, mode=Mode.SUBTRACT)
 
     # Tapped M6 split-line bores receiving M6x40 screws from left half
+    split_tap_y_center = (SPLIT_TAP_DEPTH_Y_MM - SPLIT_TAP_OVERSHOOT_Y_MM) * HALF_FACTOR
+    split_tap_len = SPLIT_TAP_DEPTH_Y_MM + SPLIT_TAP_OVERSHOOT_Y_MM
     for sx, sz in SPLIT_BOLT_XZ_MM:
-      with Locations((sx, SPLIT_TAP_DEPTH_Y_MM * HALF_FACTOR, sz)):
-        Cylinder(radius=M6_TAP_DRILL_RADIUS_MM, height=SPLIT_TAP_DEPTH_Y_MM + 2.0, rotation=(ROT_X_90_DEG, 0.0, 0.0), mode=Mode.SUBTRACT)
+      with Locations((sx, split_tap_y_center, sz)):
+        Cylinder(radius=M6_TAP_DRILL_RADIUS_MM, height=split_tap_len, rotation=(ROT_X_90_DEG, 0.0, 0.0), mode=Mode.SUBTRACT)
 
     for tx, tz in TIMING_COVER_BOLT_XZ_MM:
       with Locations((tx, p.case_half_y_mm - (TIMING_COVER_TAP_DEPTH_Y_MM * HALF_FACTOR), tz)):
@@ -319,7 +324,7 @@ def generate_crankcase_right(params: Optional[CrankcaseParams] = None) -> Part:
     with Locations((x_wall_outer - SPOTFACE_OFFSET_X_MM, SIGHT_GLASS_Y_MM, SIGHT_GLASS_Z_MM)):
       Cylinder(radius=SIGHT_GLASS_CB_RADIUS_MM, height=SPOTFACE_CUT_DEPTH_MM, rotation=(0.0, ROT_Y_90_DEG, 0.0), mode=Mode.SUBTRACT)
 
-  return right_case.part
+  return heal_part_edges(right_case.part)
 
 
 def _build_sloped_sump_cavity(p: CrankcaseParams) -> Part:

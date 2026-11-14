@@ -46,6 +46,7 @@ from openengine.cad.valvetrain_hardware import (
     generate_valve_guide,
     generate_valve_seat,
 )
+from openengine.cad.step_export import style_named_parts_as_compound
 
 VALVE_TILT_DEG: float = 15.0
 VALVE_IN_DIAM_M: float = DEFAULT_VALVE_HEAD_IN_M
@@ -274,8 +275,12 @@ def generate_head_assembly(
     crank_angle_deg: float = 0.0,
     has_fourth_axis: bool = True,
 ) -> Compound:
-  """Assemble the SOHC head & valvetrain sub-assembly as a single Compound."""
-  return Compound(children=list(build_head_assembly_parts(crank_angle_deg, has_fourth_axis).values()))
+  """Assemble the SOHC head & valvetrain sub-assembly as a styled Compound."""
+  return style_named_parts_as_compound(
+      "head_assembly",
+      build_head_assembly_parts(crank_angle_deg, has_fourth_axis),
+      _material_key_for_head_part,
+  )
 
 
 def _material_key_for_head_part(name: str) -> str:

@@ -34,6 +34,7 @@ from openengine.cad.crankcase import (
     generate_sump_oil_pool,
     generate_sump_pan,
 )
+from openengine.cad.step_export import style_named_parts_as_compound
 
 MM3_PER_LITER: float = 1.0e6
 BDC_CRANK_ANGLE_DEG: float = 180.0
@@ -152,8 +153,12 @@ def build_crankcase_assembly_parts(include_oil_pool: bool = True) -> Dict[str, P
 
 
 def generate_crankcase_assembly(include_oil_pool: bool = True) -> Compound:
-  """Assemble the split crankcase + sloped sump pan sub-assembly as a Compound."""
-  return Compound(children=list(build_crankcase_assembly_parts(include_oil_pool=include_oil_pool).values()))
+  """Assemble the split crankcase + sloped sump pan sub-assembly as a styled Compound."""
+  return style_named_parts_as_compound(
+      "crankcase_assembly",
+      build_crankcase_assembly_parts(include_oil_pool=include_oil_pool),
+      _material_key_for_case_part,
+  )
 
 
 def _material_key_for_case_part(name: str) -> str:

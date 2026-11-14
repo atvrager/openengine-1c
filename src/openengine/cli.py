@@ -4,12 +4,15 @@ from pathlib import Path
 import json
 import time
 from typing import Optional
-from build123d import export_step
 import numpy as np
 from openengine.cad import (
+    FLUID_OPACITY,
+    OPAQUE_OPACITY,
+    SINGLE_HOUSING_OPACITY,
     calculate_block_thermal_capacity,
     calculate_combustion_chamber_volume,
     calculate_crankshaft_balance,
+    export_styled_step,
     extract_intake_port_fluid_domain,
     generate_connecting_rod,
     generate_crankshaft,
@@ -20,6 +23,7 @@ from openengine.cad import (
     generate_engine_assembly,
     generate_piston,
     generate_poppet_valve,
+    style_single_part,
     verify_all_c500_fixtures,
     verify_assembly_clearances,
     verify_dressed_engine,
@@ -663,7 +667,10 @@ def cad(
       crankpin_diam_m=g["crankpin_diameter"],
   )
   rod_file = out_path / "connecting_rod.step"
-  export_step(rod, rod_file)
+  export_styled_step(
+      style_single_part(rod, "connecting_rod", "ALUMINUM_7075_T6", OPAQUE_OPACITY),
+      rod_file,
+  )
   rich.print(f"[green]Saved connecting rod ({rod.volume/1000:.1f} cm³) to: {rod_file}[/green]")
 
   rich.print("[cyan]Generating Piston via build123d...[/cyan]")
@@ -672,14 +679,20 @@ def cad(
       wrist_pin_diam_m=g["wrist_pin_diameter"],
   )
   piston_file = out_path / "piston.step"
-  export_step(piston, piston_file)
+  export_styled_step(
+      style_single_part(piston, "piston", "ALUMINUM_4032_T6", OPAQUE_OPACITY),
+      piston_file,
+  )
   rich.print(f"[green]Saved piston ({piston.volume/1000:.1f} cm³) to: {piston_file}[/green]")
 
   rich.print("[cyan]Generating SOHC Pent-Roof Cylinder Head via build123d...[/cyan]")
   v_mm3, v_cm3 = calculate_combustion_chamber_volume()
   head = generate_cylinder_head()
   head_file = out_path / "cylinder_head.step"
-  export_step(head, head_file)
+  export_styled_step(
+      style_single_part(head, "cylinder_head", "ALUMINUM_6061_T6", SINGLE_HOUSING_OPACITY),
+      head_file,
+  )
   rich.print(
       f"[green]Saved cylinder head ({head.volume/1000:.1f} cm³, chamber dome {v_cm3:.2f} cm³) to: {head_file}[/green]"
   )
@@ -689,27 +702,42 @@ def cad(
   ex_valve = generate_poppet_valve(head_diam_m=v_cfg.get("exhaust_diameter", 0.026))
   in_valve_file = out_path / "valve_intake.step"
   ex_valve_file = out_path / "valve_exhaust.step"
-  export_step(in_valve, in_valve_file)
-  export_step(ex_valve, ex_valve_file)
+  export_styled_step(
+      style_single_part(in_valve, "valve_intake", "STEEL_4140_PREHARD", OPAQUE_OPACITY),
+      in_valve_file,
+  )
+  export_styled_step(
+      style_single_part(ex_valve, "valve_exhaust", "STEEL_4140_PREHARD", OPAQUE_OPACITY),
+      ex_valve_file,
+  )
   rich.print(f"[green]Saved intake valve ({in_valve.volume/1000:.2f} cm³) to: {in_valve_file}[/green]")
   rich.print(f"[green]Saved exhaust valve ({ex_valve.volume/1000:.2f} cm³) to: {ex_valve_file}[/green]")
 
   rich.print("[cyan]Extracting CFD Port Flow Fluid Domain via build123d...[/cyan]")
   fluid = extract_intake_port_fluid_domain()
   fluid_file = out_path / "intake_fluid_domain.step"
-  export_step(fluid, fluid_file)
+  export_styled_step(
+      style_single_part(fluid, "intake_fluid_domain", "FUEL_AIR_CHARGE", FLUID_OPACITY),
+      fluid_file,
+  )
   rich.print(f"[green]Saved CFD fluid domain ({fluid.volume/1000:.1f} cm³) to: {fluid_file}[/green]")
 
   rich.print("[cyan]Generating 105 mm Honed DOM Steel Cylinder Liner via build123d...[/cyan]")
   liner = generate_cylinder_liner()
   liner_file = out_path / "cylinder_liner.step"
-  export_step(liner, liner_file)
+  export_styled_step(
+      style_single_part(liner, "cylinder_liner", "DOM_STEEL_A513_T5", OPAQUE_OPACITY),
+      liner_file,
+  )
   rich.print(f"[green]Saved cylinder liner ({liner.volume/1000:.1f} cm³, {(liner.volume/1000)*7.85:.0f} g) to: {liner_file}[/green]")
 
   rich.print("[cyan]Generating Aluminum Cylinder Block with Radial Cooling Fins via build123d...[/cyan]")
   block = generate_cylinder_block()
   block_file = out_path / "cylinder_block.step"
-  export_step(block, block_file)
+  export_styled_step(
+      style_single_part(block, "cylinder_block", "ALUMINUM_6061_T6", SINGLE_HOUSING_OPACITY),
+      block_file,
+  )
   therm = calculate_block_thermal_capacity()
   rich.print(
       f"[green]Saved cylinder block ({block.volume/1000:.1f} cm³, {therm['exterior_area_m2']:.3f} m² fin area, {therm['thermal_dissipation_w']:.0f} W cooling) to: {block_file}[/green]"
@@ -718,7 +746,10 @@ def cad(
   rich.print("[cyan]Generating 3-Piece Press-Fit Billet Crankshaft via build123d...[/cyan]")
   crank = generate_crankshaft()
   crank_file = out_path / "crankshaft.step"
-  export_step(crank, crank_file)
+  export_styled_step(
+      style_single_part(crank, "crankshaft", "STEEL_4140_PREHARD", OPAQUE_OPACITY),
+      crank_file,
+  )
   crank_bal = calculate_crankshaft_balance()
   rich.print(
       f"[green]Saved crankshaft ({crank.volume/1000:.1f} cm³, {crank_bal['crankshaft_mass_kg']:.2f} kg, {crank_bal['balance_factor_percent']:.1f}% balance) to: {crank_file}[/green]"
@@ -737,7 +768,7 @@ def cad(
 
   assembly = generate_engine_assembly(0.0)
   assembly_file = out_path / "engine_assembly.step"
-  export_step(assembly, assembly_file)
+  export_styled_step(assembly, assembly_file)
   rich.print(
       f"[green]Saved master engine assembly ({assembly.volume/1000:.1f} cm³, {len(assembly.solids())} parts) to: {assembly_file}[/green]"
   )
@@ -747,7 +778,7 @@ def cad(
   fixture_rep = verify_all_c500_fixtures(has_fourth_axis=True)
   dressed_asm = generate_dressed_engine_assembly(0.0)
   dressed_file = out_path / "dressed_engine_assembly.step"
-  export_step(dressed_asm, dressed_file)
+  export_styled_step(dressed_asm, dressed_file)
 
   twin_table = Table(title="1:1 C500 Billet + COTS Dressed Engine Twin Summary", show_header=True)
   twin_table.add_column("Metric", style="cyan")

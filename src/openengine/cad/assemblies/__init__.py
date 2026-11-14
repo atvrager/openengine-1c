@@ -20,6 +20,7 @@ from openengine.cad.assemblies.dressed_engine_assembly import (
     build_dressed_engine_layer_groups,
     build_dressed_engine_parts,
     generate_dressed_engine_assembly,
+    material_key_for_dressed_part,
     verify_dressed_engine,
 )
 from openengine.cad.assemblies.head_assembly import (
@@ -55,6 +56,7 @@ __all__ = [
     "generate_head_assembly",
     "generate_rotating_assembly",
     "get_c500_setup_part",
+    "material_key_for_dressed_part",
     "verify_all_c500_fixtures",
     "verify_crankcase_assembly",
     "verify_dressed_engine",

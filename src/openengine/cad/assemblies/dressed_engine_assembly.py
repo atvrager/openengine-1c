@@ -45,6 +45,7 @@ from openengine.cad.cylinder_block import (
     generate_cylinder_liner,
 )
 from openengine.cad.cylinder_head import IN_FLANGE_Z_MM, MANIFOLD_BOLT_OFFSET_Y_MM
+from openengine.cad.step_export import style_named_parts_as_compound
 
 HEAD_WASHER_Z_MM: float = 44.02
 HEAD_BOLT_Z_MM: float = 45.65
@@ -80,14 +81,14 @@ BASE_DRESSED_MATERIALS: Dict[str, str] = {
     **BASE_HEAD_MATERIALS,
     **BASE_CRANKCASE_MATERIALS,
     "cylinder_block": "ALUMINUM_6061_T6",
-    "cylinder_liner": "STEEL_4140_PREHARD",
+    "cylinder_liner": "DOM_STEEL_A513_T5",
     "roller_chain_25": "STEEL_4140_PREHARD",
     "intake_manifold_adapter": "ALUMINUM_6061_T6",
     "carburetor_vm26": "DIECAST_CARB_ALLOY",
     "fan_shroud": "ALUMINUM_6061_T6",
     "hall_pickup": "PHENOLIC_ELECTRONICS",
     "cdi_module": "PHENOLIC_ELECTRONICS",
-    "fuel_charge": "SAE_10W40_OIL",
+    "fuel_charge": "FUEL_AIR_CHARGE",
 }
 
 STRUCTURAL_HOUSING_KEYS: Tuple[str, ...] = (
@@ -111,10 +112,32 @@ CORE_ANIMATED_KEYS: frozenset[str] = frozenset({
     "crankshaft",
     "conrod_beam",
     "conrod_cap",
+    "needle_bearing_nks28",
+    "conrod_bolt_1",
+    "conrod_bolt_2",
+    "conrod_dowel_1",
+    "conrod_dowel_2",
     "piston",
+    "top_ring",
+    "second_ring",
+    "oil_ring",
     "wrist_pin",
+    "circlip_left",
+    "circlip_right",
     "valve_intake",
     "valve_exhaust",
+    "retainer_intake",
+    "retainer_exhaust",
+    "camshaft",
+    "ground_cam_core_shaft",
+    "intake_lobe_2_5d",
+    "exhaust_lobe_2_5d",
+    "sprocket_cam_36t",
+    "sprocket_crank_18t",
+    "rocker_intake",
+    "rocker_exhaust",
+    "flywheel",
+    "trigger_wheel",
 })
 
 CRANKCASE_LAYER_KEYS: Tuple[str, ...] = (
@@ -266,34 +289,59 @@ def build_dressed_engine_parts(
 def build_dressed_engine_layer_groups(
     crank_angle_deg: float = 0.0,
     has_fourth_axis: bool = True,
+    parts: Dict[str, Part] | None = None,
 ) -> Dict[str, Compound]:
-  """Partition dressed engine parts into toggleable dashboard/GLTF visualization layers."""
-  parts = build_dressed_engine_parts(crank_angle_deg=crank_angle_deg, has_fourth_axis=has_fourth_axis, include_fluids=True)
-  used: Set[str] = set(CORE_ANIMATED_KEYS)
+  """Partition dressed engine parts into styled toggleable dashboard/GLTF layers."""
+  all_parts = (
+      parts
+      if parts is not None
+      else build_dressed_engine_parts(
+          crank_angle_deg=crank_angle_deg,
+          has_fourth_axis=has_fourth_axis,
+          include_fluids=True,
+      )
+  )
+  excluded: Set[str] = set(CORE_ANIMATED_KEYS)
 
-  def _collect(keys: Tuple[str, ...]) -> Compound:
-    solids = []
+  def _collect(layer_name: str, keys: Tuple[str, ...]) -> Compound:
+    layer_parts: Dict[str, Part] = {}
     for key in keys:
-      if key in parts:
-        used.add(key)
-        solids.append(parts[key])
-    return Compound(children=solids)
+      if key in all_parts and key not in excluded:
+        excluded.add(key)
+        layer_parts[key] = all_parts[key]
+    return style_named_parts_as_compound(
+        layer_name,
+        layer_parts,
+        material_key_for_dressed_part,
+    )
 
-  crankcase_grp = _collect(CRANKCASE_LAYER_KEYS)
-  valvetrain_grp = _collect(VALVETRAIN_LAYER_KEYS)
-  covers_grp = _collect(COVERS_AUX_LAYER_KEYS)
-  oil_pool = parts["sump_oil_pool"]
-  used.add("sump_oil_pool")
-  if "fuel_charge" in parts:
-    used.add("fuel_charge")
+  crankcase_grp = _collect("crankcase_group", CRANKCASE_LAYER_KEYS)
+  valvetrain_grp = _collect("valvetrain_group", VALVETRAIN_LAYER_KEYS)
+  covers_grp = _collect("covers_and_aux_group", COVERS_AUX_LAYER_KEYS)
+  excluded.add("sump_oil_pool")
+  excluded.discard("fuel_charge")
+  if "fuel_charge" in all_parts:
+    excluded.add("fuel_charge")
 
-  cots_solids = [part for name, part in parts.items() if name not in used]
+  cots_parts = {
+      name: part
+      for name, part in all_parts.items()
+      if name not in excluded
+  }
   return {
       "crankcase_group": crankcase_grp,
       "valvetrain_group": valvetrain_grp,
       "covers_and_aux_group": covers_grp,
-      "cots_hardware_group": Compound(children=cots_solids),
-      "oil_pool_group": Compound(children=[oil_pool]),
+      "cots_hardware_group": style_named_parts_as_compound(
+          "cots_hardware_group",
+          cots_parts,
+          material_key_for_dressed_part,
+      ),
+      "oil_pool_group": style_named_parts_as_compound(
+          "oil_pool_group",
+          {"sump_oil_pool": all_parts["sump_oil_pool"]},
+          material_key_for_dressed_part,
+      ),
   }
 
 
@@ -301,18 +349,25 @@ def generate_dressed_engine_assembly(
     crank_angle_deg: float = 0.0,
     has_fourth_axis: bool = True,
 ) -> Compound:
-  """Assemble the complete oiled and dressed digital twin as a Compound."""
+  """Assemble the complete oiled and dressed digital twin as a styled Compound."""
   parts = build_dressed_engine_parts(crank_angle_deg=crank_angle_deg, has_fourth_axis=has_fourth_axis, include_fluids=True)
-  return Compound(children=list(parts.values()))
+  return style_named_parts_as_compound(
+      "dressed_engine_assembly",
+      parts,
+      material_key_for_dressed_part,
+  )
 
 
-def _material_key_for_dressed_part(name: str) -> str:
+def material_key_for_dressed_part(name: str) -> str:
   """Resolve material density key for any component in the dressed engine twin."""
   if name in BASE_DRESSED_MATERIALS:
     return BASE_DRESSED_MATERIALS[name]
   if "dowel" in name:
     return "STEEL_4140_PREHARD"
   return "STEEL_GRADE_10_9"
+
+
+_material_key_for_dressed_part = material_key_for_dressed_part
 
 
 def _sweep_kinematic_collisions(sweep_step_deg: float, has_fourth_axis: bool) -> List[str]:

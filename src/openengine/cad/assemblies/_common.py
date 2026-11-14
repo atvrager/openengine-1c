@@ -14,6 +14,7 @@ EXTRA_DENSITY_KG_MM3: Dict[str, float] = {
     "ALUMINA_STEEL_PLUG": 3.80e-6,
     "DIECAST_CARB_ALLOY": 2.90e-6,
     "PHENOLIC_ELECTRONICS": 1.65e-6,
+    "FUEL_AIR_CHARGE": 1.20e-9,
 }
 
 
