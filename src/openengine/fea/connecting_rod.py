@@ -19,7 +19,7 @@ import numpy as np
 
 from openengine.cad.connecting_rod import generate_connecting_rod
 from openengine.fea.calculix import (
-    STEEL_4340,
+    ALUMINUM_7075_T6,
     FeaNodalResults,
     MaterialProperties,
     run_ccx_simulation,
@@ -144,7 +144,7 @@ def build_conrod_deck(
     output_deck_path: Union[str, Path],
     job_title: str,
     axial_force_n: float,  # +Y pushes small end toward big end (compression)
-    material: MaterialProperties = STEEL_4340,
+    material: MaterialProperties = ALUMINUM_7075_T6,
 ) -> None:
   """Build CalculiX input deck for connecting rod axial load case."""
   with open(mesh_inp_path, "r") as f:
@@ -208,11 +208,11 @@ def build_conrod_deck(
 
 
 def compute_column_buckling_load(
-    youngs_modulus_mpa: float = 210000.0,
-    flange_w_mm: float = 12.0,
-    flange_t_mm: float = 3.5,
-    web_t_mm: float = 3.0,
-    height_mm: float = 16.0,
+    youngs_modulus_mpa: float = 71700.0,
+    flange_w_mm: float = 17.0,
+    flange_t_mm: float = 4.5,
+    web_t_mm: float = 4.0,
+    height_mm: float = 20.0,
     effective_length_mm: float = 85.0,
 ) -> float:
   """Compute Euler critical buckling load for connecting rod I-beam shank.
@@ -292,7 +292,7 @@ def run_conrod_fea(
   lambda_ratio = r_m / cfg.center_to_center_m
   f_tensile_n = cfg.reciprocating_mass_kg * r_m * (omega_rad_s**2) * (1.0 + lambda_ratio)  # -Y direction (-2.54 kN)
 
-  material = STEEL_4340
+  material = ALUMINUM_7075_T6
 
   # 4. Run LC-3A: Compression
   t0_3a = time.time()
@@ -359,10 +359,10 @@ def run_conrod_fea(
   # 6. Column Buckling Assessment
   p_cr_n = compute_column_buckling_load(
       youngs_modulus_mpa=material.youngs_modulus_mpa,
-      flange_w_mm=12.0,
-      flange_t_mm=3.5,
-      web_t_mm=3.0,
-      height_mm=16.0,
+      flange_w_mm=17.0,
+      flange_t_mm=4.5,
+      web_t_mm=4.0,
+      height_mm=20.0,
       effective_length_mm=85.0,
   )
   sf_buckle = p_cr_n / max(1.0, f_comp_n)

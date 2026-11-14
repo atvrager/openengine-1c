@@ -14,8 +14,8 @@ def mesh_port_fluid_domain(
     mesh_size_min: float = 2.0,
     mesh_size_max: float = 4.5,
     cylinder_depth_mm: float = 40.0,
-    inlet_x_mm: float = 55.0,
-    inlet_z_mm: float = 42.0,
+    inlet_x_mm: float = 60.0,
+    inlet_z_mm: float = 34.0,
 ) -> Dict[str, Union[int, float]]:
   """Mesh the intake port fluid domain using Gmsh and export to MSH 2.2 format.
 

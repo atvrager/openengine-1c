@@ -42,9 +42,9 @@ def test_assembly_clearance_verification():
   assert rep.min_exhaust_pv_clearance_mm >= 1.50
   assert rep.min_exhaust_pv_clearance_mm > 5.0  # Actually ~5.85 mm
 
-  # Connecting rod-to-liner clearance >= 5.0 mm
+  # Connecting rod-to-liner clearance >= 5.0 mm (1:1 C500 billet ~10.9 mm)
   assert rep.min_rod_to_liner_clearance_mm >= 5.00
-  assert rep.min_rod_to_liner_clearance_mm > 12.0  # Actually ~16.0 mm
+  assert rep.min_rod_to_liner_clearance_mm > 9.5
 
 
 def test_master_assembly_compound():
@@ -52,9 +52,9 @@ def test_master_assembly_compound():
   comp = generate_engine_assembly(crank_angle_deg=0.0)
   assert comp.is_valid, "Engine assembly compound is not a valid B-Rep"
   vol_cm3 = comp.volume / 1000.0
-  # Combined volume of head, block, liner, crank, rod, piston, pin, valves ~ 1656 cm3
-  assert 1500.0 <= vol_cm3 <= 1800.0
-  assert len(comp.solids()) >= 8
+  # Combined 1:1 billet volume of head, block, liner, crank, rod, piston, pin, valves ~ 1481 cm3
+  assert 1400.0 <= vol_cm3 <= 1700.0
+  assert len(comp.solids()) == 9
 
 
 def _overlap_volume_mm3(part_a, part_b) -> float:

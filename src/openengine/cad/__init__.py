@@ -1,5 +1,27 @@
 """Parametric CAD solid modeling modules based on build123d and Open CASCADE."""
 
+from . import assemblies, cots_parts, covers_and_aux, crankcase, twin_metrics, valvetrain_hardware
+from .assemblies import (
+    C500FixtureReport,
+    CrankcaseAssemblyReport,
+    DressedEngineReport,
+    FixtureCheckItem,
+    HeadAssemblyReport,
+    RotatingAssemblyReport,
+    generate_c500_fixture_plate,
+    generate_c500_fixture_setup_compound,
+    generate_c500_rotary_chuck,
+    generate_crankcase_assembly,
+    generate_dressed_engine_assembly,
+    generate_head_assembly,
+    generate_rotating_assembly,
+    get_c500_setup_part,
+    verify_all_c500_fixtures,
+    verify_crankcase_assembly,
+    verify_dressed_engine,
+    verify_head_assembly,
+    verify_rotating_assembly,
+)
 from .assembly import (
     ClearanceReport,
     EngineAssembly,
@@ -7,11 +29,17 @@ from .assembly import (
     generate_engine_assembly,
     verify_assembly_clearances,
 )
-from .connecting_rod import generate_connecting_rod
+from .connecting_rod import (
+    ConnectingRodParams,
+    generate_connecting_rod,
+    generate_connecting_rod_parts,
+)
 from .crankshaft import (
     CrankshaftParams,
+    CrankshaftParts,
     calculate_crankshaft_balance,
     generate_crankshaft,
+    generate_crankshaft_parts,
 )
 from .cylinder_block import (
     CylinderBlockParams,
@@ -27,9 +55,32 @@ from .cylinder_head import (
     generate_poppet_valve,
 )
 from .piston import generate_piston
+from .twin_metrics import (
+    get_cad_compression_ratio,
+    get_cad_dipper_immersion_mm,
+    get_cad_dipper_tip_radius_mm,
+    get_cad_exhaust_valve_mass_kg,
+    get_cad_head_volumes_and_cr,
+    get_cad_intake_valve_mass_kg,
+    get_cad_reciprocating_mass_kg,
+    get_cad_retainer_mass_kg,
+    get_cad_rotating_and_reciprocating_masses_kg,
+    get_cad_rotating_mass_kg,
+    get_cad_sump_oil_volume_l,
+    get_cad_sump_splash_metrics,
+    get_cad_valvetrain_masses_kg,
+)
 
 __all__ = [
+    "assemblies",
+    "cots_parts",
+    "covers_and_aux",
+    "crankcase",
+    "twin_metrics",
+    "valvetrain_hardware",
+    "ConnectingRodParams",
     "generate_connecting_rod",
+    "generate_connecting_rod_parts",
     "generate_piston",
     "generate_cylinder_head",
     "generate_poppet_valve",
@@ -40,7 +91,9 @@ __all__ = [
     "generate_cylinder_liner",
     "calculate_block_thermal_capacity",
     "CylinderBlockParams",
+    "CrankshaftParts",
     "generate_crankshaft",
+    "generate_crankshaft_parts",
     "calculate_crankshaft_balance",
     "CrankshaftParams",
     "EngineAssembly",
@@ -48,4 +101,36 @@ __all__ = [
     "ClearanceReport",
     "generate_engine_assembly",
     "verify_assembly_clearances",
+    "C500FixtureReport",
+    "CrankcaseAssemblyReport",
+    "DressedEngineReport",
+    "FixtureCheckItem",
+    "HeadAssemblyReport",
+    "RotatingAssemblyReport",
+    "generate_c500_fixture_plate",
+    "generate_c500_fixture_setup_compound",
+    "generate_c500_rotary_chuck",
+    "generate_crankcase_assembly",
+    "generate_dressed_engine_assembly",
+    "generate_head_assembly",
+    "generate_rotating_assembly",
+    "get_c500_setup_part",
+    "verify_all_c500_fixtures",
+    "verify_crankcase_assembly",
+    "verify_dressed_engine",
+    "verify_head_assembly",
+    "verify_rotating_assembly",
+    "get_cad_compression_ratio",
+    "get_cad_dipper_immersion_mm",
+    "get_cad_dipper_tip_radius_mm",
+    "get_cad_exhaust_valve_mass_kg",
+    "get_cad_head_volumes_and_cr",
+    "get_cad_intake_valve_mass_kg",
+    "get_cad_reciprocating_mass_kg",
+    "get_cad_retainer_mass_kg",
+    "get_cad_rotating_and_reciprocating_masses_kg",
+    "get_cad_rotating_mass_kg",
+    "get_cad_sump_oil_volume_l",
+    "get_cad_sump_splash_metrics",
+    "get_cad_valvetrain_masses_kg",
 ]

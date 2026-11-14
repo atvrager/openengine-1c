@@ -16,10 +16,13 @@ from openengine.cad import (
     generate_cylinder_block,
     generate_cylinder_head,
     generate_cylinder_liner,
+    generate_dressed_engine_assembly,
     generate_engine_assembly,
     generate_piston,
     generate_poppet_valve,
+    verify_all_c500_fixtures,
     verify_assembly_clearances,
+    verify_dressed_engine,
 )
 from openengine.cfd import (
     ChtCoolingConfig,
@@ -697,11 +700,11 @@ def cad(
   export_step(fluid, fluid_file)
   rich.print(f"[green]Saved CFD fluid domain ({fluid.volume/1000:.1f} cm³) to: {fluid_file}[/green]")
 
-  rich.print("[cyan]Generating Cast Iron Cylinder Liner via build123d...[/cyan]")
+  rich.print("[cyan]Generating 105 mm Honed DOM Steel Cylinder Liner via build123d...[/cyan]")
   liner = generate_cylinder_liner()
   liner_file = out_path / "cylinder_liner.step"
   export_step(liner, liner_file)
-  rich.print(f"[green]Saved cylinder liner ({liner.volume/1000:.1f} cm³, {(liner.volume/1000)*7.2:.0f} g) to: {liner_file}[/green]")
+  rich.print(f"[green]Saved cylinder liner ({liner.volume/1000:.1f} cm³, {(liner.volume/1000)*7.85:.0f} g) to: {liner_file}[/green]")
 
   rich.print("[cyan]Generating Aluminum Cylinder Block with Radial Cooling Fins via build123d...[/cyan]")
   block = generate_cylinder_block()
@@ -712,7 +715,7 @@ def cad(
       f"[green]Saved cylinder block ({block.volume/1000:.1f} cm³, {therm['exterior_area_m2']:.3f} m² fin area, {therm['thermal_dissipation_w']:.0f} W cooling) to: {block_file}[/green]"
   )
 
-  rich.print("[cyan]Generating Forged 4340 Counterweighted Crankshaft via build123d...[/cyan]")
+  rich.print("[cyan]Generating 3-Piece Press-Fit Billet Crankshaft via build123d...[/cyan]")
   crank = generate_crankshaft()
   crank_file = out_path / "crankshaft.step"
   export_step(crank, crank_file)
@@ -738,6 +741,28 @@ def cad(
   rich.print(
       f"[green]Saved master engine assembly ({assembly.volume/1000:.1f} cm³, {len(assembly.solids())} parts) to: {assembly_file}[/green]"
   )
+
+  rich.print("[cyan]Verifying 1:1 C500 Billet + COTS Dressed Digital Twin & Fixtures...[/cyan]")
+  dressed_rep = verify_dressed_engine(sweep_step_deg=60.0, has_fourth_axis=True)
+  fixture_rep = verify_all_c500_fixtures(has_fourth_axis=True)
+  dressed_asm = generate_dressed_engine_assembly(0.0)
+  dressed_file = out_path / "dressed_engine_assembly.step"
+  export_step(dressed_asm, dressed_file)
+
+  twin_table = Table(title="1:1 C500 Billet + COTS Dressed Engine Twin Summary", show_header=True)
+  twin_table.add_column("Metric", style="cyan")
+  twin_table.add_column("Value", style="green")
+  twin_table.add_row("Total B-Rep Solids", str(dressed_rep.total_part_count))
+  twin_table.add_row("Dry / Wet Mass (kg)", f"{dressed_rep.dry_mass_kg:.3f} / {dressed_rep.wet_mass_kg:.3f}")
+  twin_table.add_row("Geometric Compression Ratio", f"{dressed_rep.compression_ratio:.2f}:1")
+  twin_table.add_row("Sump Oil Pool / BDC Immersion", f"{dressed_rep.oil_volume_liters:.3f} L / {dressed_rep.bdc_dipper_immersion_mm:.1f} mm")
+  twin_table.add_row("Reciprocating Balance Factor", f"{dressed_rep.effective_balance_factor * 100.0:.1f}%")
+  twin_table.add_row("Static / Kinematic / Wrench Hits", f"{len(dressed_rep.static_solid_collisions)} / {len(dressed_rep.kinematic_sweep_collisions)} / {len(dressed_rep.wrench_zone_collisions)}")
+  twin_table.add_row("C500 Fixture Checks Passed", f"{sum(1 for i in fixture_rep.items if i.is_valid)} / {len(fixture_rep.items)}")
+  rich.print(twin_table)
+  rich.print(f"[green]Saved dressed twin STEP to: {dressed_file}[/green]")
+  if not dressed_rep.is_valid or not fixture_rep.all_passed:
+    raise typer.Exit(code=1)
 
 
 @app.command()

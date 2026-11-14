@@ -7,6 +7,7 @@ from openengine.cad.crankshaft import (
     CrankshaftParams,
     calculate_crankshaft_balance,
     generate_crankshaft,
+    generate_crankshaft_parts,
 )
 
 
@@ -67,5 +68,20 @@ def test_crankshaft_balance_factor():
   assert bal["center_of_mass_z_mm"] < -5.0
   # Effective balance factor must be in 40% to 60% sweet spot
   assert 0.40 <= bal["effective_balance_factor"] <= 0.60
-  # Total unbalance ~ 10,000 to 11,000 g.mm
-  assert 9500.0 <= bal["counterweight_unbalance_g_mm"] <= 11500.0
+  # Total unbalance for 1:1 3-piece billet crankshaft ~ 8590 g.mm
+  assert 8000.0 <= bal["counterweight_unbalance_g_mm"] <= 9200.0
+
+
+def test_crankshaft_five_press_fit_parts():
+  """Verify the 3-piece billet crankshaft decomposes into 5 valid press-fit parts."""
+  parts = generate_crankshaft_parts()
+  piece_list = [
+      parts.left_web,
+      parts.right_web,
+      parts.crankpin,
+      parts.left_shaft,
+      parts.right_shaft,
+  ]
+  assert all(piece.is_valid for piece in piece_list)
+  assert all(piece.volume > 0.0 for piece in piece_list)
+  assert abs(parts.left_web.volume - parts.right_web.volume) < 1.0

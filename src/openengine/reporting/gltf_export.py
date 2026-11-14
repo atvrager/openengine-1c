@@ -9,13 +9,18 @@ from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from build123d import Axis, BuildPart, Cylinder, Location, Part, export_gltf
+from build123d import Axis, Compound, Location, Part, export_gltf
 import numpy as np
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.TopLoc import TopLoc_Location
 
+from openengine.cad.assemblies import (
+    build_dressed_engine_layer_groups,
+    generate_dressed_engine_assembly,
+)
 from openengine.cad.assembly import EngineAssembly, generate_engine_assembly
 from openengine.cad.connecting_rod import generate_connecting_rod
+from openengine.cad.cots_parts import generate_wrist_pin_16x45
 from openengine.cad.crankshaft import generate_crankshaft
 from openengine.cad.cylinder_block import (
     generate_cylinder_block,
@@ -60,6 +65,32 @@ def bake_shape(shape: Any) -> Part:
   return Part(transformer.Shape())
 
 
+def _bake_compound(shape: Any) -> Any:
+  """Bake Compound or Part vertices into world coordinates."""
+  if isinstance(shape, Compound):
+    return Compound(children=[bake_shape(sol) for sol in shape.solids()])
+  return bake_shape(shape)
+
+
+def _export_glb_with_upright_frame(
+    shape: Any,
+    glb_file: Path,
+    linear_deflection: float,
+    angular_deflection: float,
+) -> str:
+  """Export CAD shape to binary glTF while preserving +Z up CAD assembly coordinates."""
+  # build123d.export_gltf internally applies -90 deg X rotation; counteract to keep +Z up.
+  shape.location = Location((0, 0, 0), (1, 0, 0), 90.0)
+  export_gltf(
+      shape,
+      str(glb_file),
+      binary=True,
+      linear_deflection=linear_deflection,
+      angular_deflection=angular_deflection,
+  )
+  return str(glb_file)
+
+
 def export_cad_models_to_gltf(
     output_dir: Union[str, Path] = "outputs/reports/models",
     linear_deflection: float = 0.05,
@@ -81,60 +112,38 @@ def export_cad_models_to_gltf(
   assembly = EngineAssembly()
   st0 = assembly.solve_kinematics(0.0)
 
-  # Generate CAD solids directly in their validated master assembly configuration at TDC
   head = generate_cylinder_head()
   block = generate_cylinder_block()
   liner = generate_cylinder_liner()
+  crank = generate_crankshaft().translate((0.0, 0.0, assembly.z_crank_main_mm))
+  rod = generate_connecting_rod().rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0).translate((0.0, 0.0, st0.wrist_pin_z_mm))
+  piston = generate_piston().translate((0.0, 0.0, st0.wrist_pin_z_mm + 3.0))
+  wrist_pin = generate_wrist_pin_16x45().translate((0.0, 0.0, st0.wrist_pin_z_mm))
+  in_valve = generate_poppet_valve(head_diam_m=0.030).rotate(Axis.Y, 15.0).translate((16.0, 0.0, 6.0))
+  ex_valve = generate_poppet_valve(head_diam_m=0.026).rotate(Axis.Y, -15.0).translate((-16.0, 0.0, 6.0))
 
-  crank_base = generate_crankshaft()
-  crank = crank_base.translate((0.0, 0.0, assembly.z_crank_main_mm))
-
-  rod_base = generate_connecting_rod()
-  rod_aligned = rod_base.rotate(Axis.Z, 90.0).rotate(Axis.Y, -90.0)
-  rod = rod_aligned.translate((0.0, 0.0, st0.wrist_pin_z_mm))
-
-  piston_base = generate_piston()
-  piston = piston_base.translate((0.0, 0.0, st0.wrist_pin_z_mm + 3.0))
-
-  with BuildPart() as wp:
-    Cylinder(radius=8.0, height=48.0, rotation=(90.0, 0.0, 0.0))
-  wrist_pin = wp.part.translate((0.0, 0.0, st0.wrist_pin_z_mm))
-
-  in_valve_base = generate_poppet_valve(head_diam_m=0.030)
-  ex_valve_base = generate_poppet_valve(head_diam_m=0.026)
-  in_valve = in_valve_base.rotate(Axis.Y, 15.0).translate((16.0, 0.0, 6.0))
-  ex_valve = ex_valve_base.rotate(Axis.Y, -15.0).translate((-16.0, 0.0, 6.0))
-
-  parts_to_generate = {
-      "cylinder_head": lambda: bake_shape(head),
-      "cylinder_block": lambda: bake_shape(block),
-      "cylinder_liner": lambda: bake_shape(liner),
-      "crankshaft": lambda: bake_shape(crank),
-      "connecting_rod": lambda: bake_shape(rod),
-      "piston": lambda: bake_shape(piston),
-      "wrist_pin": lambda: bake_shape(wrist_pin),
-      "valve_intake": lambda: bake_shape(in_valve),
-      "valve_exhaust": lambda: bake_shape(ex_valve),
+  parts_to_bake = {
+      "cylinder_head": head,
+      "cylinder_block": block,
+      "cylinder_liner": liner,
+      "crankshaft": crank,
+      "connecting_rod": rod,
+      "piston": piston,
+      "wrist_pin": wrist_pin,
+      "valve_intake": in_valve,
+      "valve_exhaust": ex_valve,
+      **build_dressed_engine_layer_groups(0.0),
   }
 
   glb_paths: Dict[str, str] = {}
-  for name, gen_fn in parts_to_generate.items():
-    glb_file = out_path / f"{name}.glb"
-    part = gen_fn()
-    # build123d.export_gltf internally multiplies location by Location((0, 0, 0), (1, 0, 0), -90)
-    # Counteract this so the exported glTF node has identity rotation and stays strictly in CAD assembly space (+Z up).
-    part.location = Location((0, 0, 0), (1, 0, 0), 90.0)
-    export_gltf(
-        part,
-        str(glb_file),
-        binary=True,
-        linear_deflection=linear_deflection,
-        angular_deflection=angular_deflection,
+  for name, shape in parts_to_bake.items():
+    glb_paths[name] = _export_glb_with_upright_frame(
+        _bake_compound(shape),
+        out_path / f"{name}.glb",
+        linear_deflection,
+        angular_deflection,
     )
-    glb_paths[name] = str(glb_file)
 
-  # Export analytical kinematic trajectory computed from the master assembly engine
-  assembly = EngineAssembly()
   trajectory: List[Dict[str, Any]] = []
   for th in range(0, 720, 2):
     st = assembly.solve_kinematics(float(th))
@@ -157,19 +166,18 @@ def export_cad_models_to_gltf(
   traj_file.write_text(json.dumps(trajectory, indent=2))
   glb_paths["kinematic_trajectory"] = str(traj_file)
 
-  # Master assembly
-  assembly_glb = out_path / "engine_assembly.glb"
-  asm = generate_engine_assembly()
-  asm.location = Location((0, 0, 0), (1, 0, 0), 90.0)
-  export_gltf(
-      asm,
-      str(assembly_glb),
-      binary=True,
-      linear_deflection=linear_deflection,
-      angular_deflection=angular_deflection,
+  glb_paths["engine_assembly"] = _export_glb_with_upright_frame(
+      generate_engine_assembly(),
+      out_path / "engine_assembly.glb",
+      linear_deflection,
+      angular_deflection,
   )
-  glb_paths["engine_assembly"] = str(assembly_glb)
-
+  glb_paths["dressed_engine_assembly"] = _export_glb_with_upright_frame(
+      generate_dressed_engine_assembly(),
+      out_path / "dressed_engine_assembly.glb",
+      linear_deflection,
+      angular_deflection,
+  )
   return glb_paths
 
 

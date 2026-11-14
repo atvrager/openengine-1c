@@ -109,6 +109,7 @@ def mesh_structural_part_c3d10(
     gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size_max)
     gmsh.option.setNumber("Mesh.Optimize", 1)
     gmsh.option.setNumber("Mesh.OptimizeNetgen", 1)
+    gmsh.option.setNumber("Mesh.SecondOrderLinear", 1)
 
     # Generate 3D volume mesh and upgrade to quadratic order 2 (C3D10)
     gmsh.model.mesh.generate(3)

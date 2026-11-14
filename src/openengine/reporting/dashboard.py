@@ -149,6 +149,11 @@ def generate_interactive_dashboard(
       "wrist_pin",
       "valve_intake",
       "valve_exhaust",
+      "crankcase_group",
+      "valvetrain_group",
+      "covers_and_aux_group",
+      "cots_hardware_group",
+      "oil_pool_group",
   ]
   for name in cad_part_names:
     p = m_dir / f"{name}.glb"
@@ -477,6 +482,13 @@ def generate_interactive_dashboard(
             <button id="reset-cam-btn" class="btn btn-sm" title="Reset Camera">Reset</button>
           </div>
           <button id="xray-btn" class="btn btn-sm btn-active" title="Toggle X-Ray Transparency">X-Ray</button>
+          <div class="btn-group">
+            <button id="layer-case-btn" class="btn btn-sm btn-active" title="Toggle Crankcase & Sump">Case</button>
+            <button id="layer-valvetrain-btn" class="btn btn-sm btn-active" title="Toggle SOHC Valvetrain">Valvetrain</button>
+            <button id="layer-covers-btn" class="btn btn-sm btn-active" title="Toggle Covers & Aux">Covers</button>
+            <button id="layer-cots-btn" class="btn btn-sm btn-active" title="Toggle McMaster COTS Hardware">COTS</button>
+            <button id="layer-oil-btn" class="btn btn-sm btn-active" title="Toggle 0.65 L Oil Pool">Oil</button>
+          </div>
         </div>
 
         <!-- Floating Bottom Overlay: Play/Pause & CA Scrubber -->
@@ -755,6 +767,11 @@ def generate_interactive_dashboard(
     const staticGroup = new THREE.Group();
     const valveInGroup = new THREE.Group();
     const valveExGroup = new THREE.Group();
+    const crankcaseGroup = new THREE.Group();
+    const valvetrainGroup = new THREE.Group();
+    const coversGroup = new THREE.Group();
+    const cotsGroup = new THREE.Group();
+    const oilGroup = new THREE.Group();
 
     kinScene.add(crankGroup);
     kinScene.add(rodGroup);
@@ -762,6 +779,11 @@ def generate_interactive_dashboard(
     kinScene.add(staticGroup);
     kinScene.add(valveInGroup);
     kinScene.add(valveExGroup);
+    kinScene.add(crankcaseGroup);
+    kinScene.add(valvetrainGroup);
+    kinScene.add(coversGroup);
+    kinScene.add(cotsGroup);
+    kinScene.add(oilGroup);
 
     // Crankshaft main journal is located at Z = -159 mm
     crankGroup.position.set(0, 0, -159.0);
@@ -776,6 +798,11 @@ def generate_interactive_dashboard(
     const matHead = new THREE.MeshStandardMaterial({{ color: 0x4a5d75, metalness: 0.45, roughness: 0.50, transparent: true, opacity: 0.40 }});
     const matValveIn = new THREE.MeshStandardMaterial({{ color: 0x00d2ff, metalness: 0.85, roughness: 0.20 }});
     const matValveEx = new THREE.MeshStandardMaterial({{ color: 0xff9d00, metalness: 0.85, roughness: 0.20 }});
+    const matCase = new THREE.MeshStandardMaterial({{ color: 0x45586e, metalness: 0.45, roughness: 0.50, transparent: true, opacity: 0.35 }});
+    const matValvetrain = new THREE.MeshStandardMaterial({{ color: 0x9aaec0, metalness: 0.80, roughness: 0.28 }});
+    const matCovers = new THREE.MeshStandardMaterial({{ color: 0x5c728a, metalness: 0.50, roughness: 0.45, transparent: true, opacity: 0.35 }});
+    const matCots = new THREE.MeshStandardMaterial({{ color: 0xb8c4cf, metalness: 0.85, roughness: 0.25 }});
+    const matOil = new THREE.MeshStandardMaterial({{ color: 0xd9822b, metalness: 0.15, roughness: 0.20, transparent: true, opacity: 0.55 }});
 
     // Helper to decode Base64 into ArrayBuffer for GLTFLoader
     function base64ToArrayBuffer(b64) {{
@@ -840,6 +867,13 @@ def generate_interactive_dashboard(
     // Poppet valves are seated in the head at TDC (+/- 15 deg inclined)
     loadCadModel('valve_intake', valveInGroup, matValveIn);
     loadCadModel('valve_exhaust', valveExGroup, matValveEx);
+
+    // Dressed C500 billet & COTS visualization layers
+    loadCadModel('crankcase_group', crankcaseGroup, matCase);
+    loadCadModel('valvetrain_group', valvetrainGroup, matValvetrain);
+    loadCadModel('covers_and_aux_group', coversGroup, matCovers);
+    loadCadModel('cots_hardware_group', cotsGroup, matCots);
+    loadCadModel('oil_pool_group', oilGroup, matOil);
 
     // Load analytical kinematic trajectory artifact
     const trajectoryData = {traj_json_str};
@@ -976,14 +1010,36 @@ def generate_interactive_dashboard(
       matBlock.opacity = isXray ? 0.35 : 0.95;
       matHead.opacity = isXray ? 0.40 : 0.95;
       matLiner.opacity = isXray ? 0.35 : 0.95;
+      matCase.opacity = isXray ? 0.35 : 0.95;
+      matCovers.opacity = isXray ? 0.35 : 0.95;
       matBlock.transparent = isXray;
       matHead.transparent = isXray;
       matLiner.transparent = isXray;
+      matCase.transparent = isXray;
+      matCovers.transparent = isXray;
       matBlock.needsUpdate = true;
       matHead.needsUpdate = true;
       matLiner.needsUpdate = true;
+      matCase.needsUpdate = true;
+      matCovers.needsUpdate = true;
       document.getElementById('xray-btn').classList.toggle('btn-active', isXray);
     }});
+
+    const layerButtons = [
+      ['layer-case-btn', crankcaseGroup],
+      ['layer-valvetrain-btn', valvetrainGroup],
+      ['layer-covers-btn', coversGroup],
+      ['layer-cots-btn', cotsGroup],
+      ['layer-oil-btn', oilGroup],
+    ];
+    for (const [btnId, grp] of layerButtons) {{
+      const el = document.getElementById(btnId);
+      if (!el) continue;
+      el.addEventListener('click', () => {{
+        grp.visible = !grp.visible;
+        el.classList.toggle('btn-active', grp.visible);
+      }});
+    }}
 
     function setCameraView(pos, target) {{
       kinCamera.position.copy(pos);

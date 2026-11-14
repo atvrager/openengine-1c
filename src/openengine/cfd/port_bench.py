@@ -329,6 +329,8 @@ def solve_port_flow_at_lift(
       mesh_size_min=actual_mesh_min,
       mesh_size_max=actual_mesh_max,
       cylinder_depth_mm=cfg.cylinder_depth_m * 1000.0,
+      inlet_x_mm=(hp.head_width_m * 1000.0) * 0.5,
+      inlet_z_mm=34.0,
   )
 
   # 4. Convert Gmsh mesh to OpenFOAM polyMesh, scale to meters, and fix wall patch type
