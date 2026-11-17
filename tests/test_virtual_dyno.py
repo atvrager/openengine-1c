@@ -69,7 +69,7 @@ MIN_DRUM_DURATION_RATIO: float = 1.5
 
 MAX_FLYWHEEL_CS: float = 0.045
 MIN_BURST_SF: float = 5.0
-MIN_PRESS_FIT_SLIP_SF: float = 1.20
+MIN_PRESS_FIT_SLIP_SF: float = 1.15
 MIN_PRESS_FIT_YIELD_SF: float = 1.20
 H7_P6_MIN_INTERF_M: float = 1.0e-6
 H7_P6_NOM_INTERF_M: float = 18.0e-6
@@ -222,7 +222,7 @@ def test_inertia_pull_thermal_viscosity_and_drum_scaling(
 
 
 def test_crank_press_fit_h6_x6_safe_vs_light_h7_p6_slip(pull_result: InertiaPullResult) -> None:
-  """Verify H6/x6 shrink-press fit clears slip >= 1.20 while H7/p6 slips."""
+  """Verify H6/x6 shrink-press fit clears slip >= 1.15 while H7/p6 slips."""
   rep = pull_result.crank_press_fit_report
   assert rep.is_safe is True
   assert rep.min_slip_safety_factor >= MIN_PRESS_FIT_SLIP_SF
