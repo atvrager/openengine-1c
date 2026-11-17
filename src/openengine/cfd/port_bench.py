@@ -260,12 +260,21 @@ def setup_port_flow_case(
     shutil.rmtree(case_dir)
   shutil.copytree(template_dir, case_dir)
 
-  # Update inlet total pressure p0 = delta_p / rho
+  # Update inlet total pressure p0 = delta_p / rho (keep cylinder outlet fixed at uniform 0)
   p0_kinematic = delta_p_pa / air_density
   p_file = case_dir / "0" / "p"
   p_content = p_file.read_text()
+  p_content = re.sub(
+      r"internalField\s+uniform\s+[\d\.]+;",
+      f"internalField   uniform {0.85 * p0_kinematic:.2f};",
+      p_content,
+  )
   p_content = re.sub(r"p0\s+uniform\s+[\d\.]+;", f"p0              uniform {p0_kinematic:.2f};", p_content)
-  p_content = re.sub(r"value\s+uniform\s+[\d\.]+;", f"value           uniform {p0_kinematic:.2f};", p_content)
+  p_content = re.sub(
+      r"(inlet\s*\{[^}]*?value\s+uniform\s+)[\d\.]+;",
+      rf"\g<1>{p0_kinematic:.2f};",
+      p_content,
+  )
   p_file.write_text(p_content)
 
   # Update max iterations and writeInterval in controlDict

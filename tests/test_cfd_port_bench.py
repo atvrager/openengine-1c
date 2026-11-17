@@ -68,7 +68,9 @@ def test_case_setup_and_pressure_injection():
     p_file = case_path / "0" / "p"
     assert p_file.exists()
     p_text = p_file.read_text()
+    assert "internalField   uniform 4937.76;" in p_text
     assert "uniform 5809.13;" in p_text
+    assert "outlet\n    {\n        type            fixedValue;\n        value           uniform 0;" in p_text
 
     ctrl_file = case_path / "system" / "controlDict"
     assert ctrl_file.exists()
