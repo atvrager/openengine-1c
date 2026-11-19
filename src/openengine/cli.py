@@ -83,6 +83,7 @@ from openengine.lubrication import (
     SumpThermalParams,
     solve_sump_thermal_balance,
 )
+from openengine.printing import PrintKitConfig, run_print_kit_workflow
 from openengine.reporting import (
     build_pages_site,
     export_cad_models_to_gltf,
@@ -1751,6 +1752,156 @@ def run_all(
   rich.print(f"[bold green]  OpenEngine-1C Pipeline Complete! Total Runtime: {t_total_elapsed:.2f} s       [/bold green]")
   rich.print(f"[bold green]  Interactive 3D Dashboard: {output_dir}/reports/engineering_dashboard.html[/bold green]")
   rich.print("[bold green]====================================================================[/bold green]")
+
+
+def _parse_bed_dims_mm(bed: str) -> tuple[float, float, float]:
+  """Parse a comma-separated ``X,Y,Z`` build-volume string in millimeters."""
+  raw_parts = [chunk.strip() for chunk in bed.split(",") if chunk.strip()]
+  if len(raw_parts) != 3:
+    raise ValueError(f"--bed must have 3 comma-separated dimensions 'X,Y,Z', got {bed!r}")
+  dims = tuple(float(val) for val in raw_parts)
+  if any(dim <= 0.0 for dim in dims):
+    raise ValueError(f"--bed dimensions must all be > 0, got {dims}")
+  return dims  # type: ignore[return-value]
+
+
+@app.command(name="print-kit")
+def print_kit(
+    scale: float = typer.Option(0.5, "--scale", help="Model scale factor in [0.25, 2.0]"),
+    filament: str = typer.Option("PETG", "--filament", help="Filament profile (PETG, PLA, PLA+, PETG_CF, ASA, ABS, TPU_95A)"),
+    nozzle: float = typer.Option(0.4, "--nozzle", help="Extruder nozzle diameter in mm"),
+    layer_height: float = typer.Option(0.2, "--layer-height", help="Slicer layer height in mm"),
+    bed: str = typer.Option("256,256,256", "--bed", help="Printer build volume 'X,Y,Z' in mm"),
+    cutaway: bool = typer.Option(False, "--cutaway/--no-cutaway", help="Generate sectioned display cutaway housings"),
+    infill: float = typer.Option(20.0, "--infill", help="Slicer infill percentage (0..100)"),
+    wall_loops: int = typer.Option(3, "--wall-loops", help="Perimeter wall loop count (>= 1)"),
+    clearance_bias: float = typer.Option(0.0, "--clearance-bias", help="Additive radial clearance offset in mm"),
+    coupon: bool = typer.Option(True, "--coupon/--no-coupon", help="Include filament tolerance calibration coupon STL"),
+    assembled_preview: bool = typer.Option(
+        False,
+        "--assembled-preview/--no-assembled-preview",
+        help="Export non-printable assembled_engine_preview.stl at CA=0 deg",
+    ),
+    verify_kinematics: bool = typer.Option(
+        True,
+        "--verify-kinematics/--skip-kinematics",
+        help="Run multi-angle (0/90/180/270 deg) B-Rep collision checks",
+    ),
+    output_dir: str = typer.Option("outputs/print_kit", "--output-dir", help="Directory for exported STLs, manifest, and guide"),
+):
+  """Generate 3D-printable snap-fit engine model kit STLs, manifest, and assembly guide."""
+  try:
+    bed_dims = _parse_bed_dims_mm(bed)
+    cfg = PrintKitConfig(
+        scale=scale,
+        filament=filament,
+        nozzle_diameter_mm=nozzle,
+        layer_height_mm=layer_height,
+        printer_bed_mm=bed_dims,
+        cutaway=cutaway,
+        infill_pct=infill,
+        wall_loops=wall_loops,
+        clearance_bias_mm=clearance_bias,
+        include_coupon=coupon,
+    )
+  except (ValueError, KeyError) as exc:
+    rich.print(f"[bold red]Invalid print-kit configuration:[/bold red] {exc}")
+    raise typer.Exit(code=1) from exc
+
+  rich.print(
+      f"[bold cyan]Generating {cfg.scale:.2f}x {cfg.filament_profile.name} OpenEngine Print Kit "
+      f"(cutaway={cfg.cutaway}, verify_kinematics={verify_kinematics})...[/bold cyan]"
+  )
+  summary = run_print_kit_workflow(
+      cfg=cfg,
+      output_dir=output_dir,
+      export_assembled_preview=assembled_preview,
+      verify_kinematics=verify_kinematics,
+  )
+
+  collisions_ok = not summary.static_collisions and not summary.kinematic_collisions
+  fitment_ok = all(item.is_valid for item in summary.fitment_checks)
+  snaps_ok = all(d.is_safe for d in summary.snap_fit_designs.values())
+
+  summary_table = Table(
+      title=f"OpenEngine Print Kit Summary ({summary.filament_profile.name} @ {cfg.scale:.2f}x)",
+      show_header=True,
+      header_style="bold cyan",
+  )
+  summary_table.add_column("Metric", style="magenta")
+  summary_table.add_column("Value", style="bold green")
+  summary_table.add_row("Filament / Nozzle / Layer", f"{summary.filament_profile.name} | {cfg.nozzle_diameter_mm:.2f} mm / {cfg.layer_height_mm:.2f} mm")
+  summary_table.add_row("Bed Envelope / Cutaway", f"{bed_dims[0]:.0f}x{bed_dims[1]:.0f}x{bed_dims[2]:.0f} mm | {'ON' if cfg.cutaway else 'OFF'}")
+  summary_table.add_row("Unique Parts / Total Pieces", f"{summary.total_unique_parts} unique STLs / {summary.total_printed_pieces} pieces")
+  summary_table.add_row("Est. Filament Mass / Print Time", f"{summary.total_mass_g:.1f} g / {summary.total_print_time_min:.1f} min ({summary.total_print_time_min / 60.0:.2f} h)")
+  summary_table.add_row("All Parts Fit Bed", _status_badge(summary.bed_fits_all))
+  summary_table.add_row("All STLs Watertight", _status_badge(summary.all_watertight))
+  summary_table.add_row(
+      "Static / Kinematic Collisions",
+      f"{len(summary.static_collisions)} / {len(summary.kinematic_collisions)} ({_status_badge(collisions_ok)})",
+  )
+  summary_table.add_row("Clearance & Snap Audits", f"{sum(1 for i in summary.fitment_checks if i.is_valid)}/{len(summary.fitment_checks)} passed ({_status_badge(fitment_ok and snaps_ok)})")
+  summary_table.add_row("STL Directory / Guide / Manifest", f"{summary.stl_dir} | {summary.guide_path.name} | {summary.manifest_path.name}")
+  if summary.assembled_preview_stl_path is not None:
+    summary_table.add_row("Assembled Preview STL", str(summary.assembled_preview_stl_path))
+  rich.print(summary_table)
+
+  part_table = Table(
+      title=f"Printable Kit Parts ({summary.total_unique_parts} Kit STLs)",
+      show_header=True,
+      header_style="bold blue",
+  )
+  part_table.add_column("Part", style="cyan")
+  part_table.add_column("Qty", justify="right", style="white")
+  part_table.add_column("Oriented XYZ (mm)", style="green")
+  part_table.add_column("Bed", style="bold green")
+  part_table.add_column("OH %", justify="right", style="yellow")
+  part_table.add_column("Supports", style="magenta")
+  part_table.add_column("Brim", style="white")
+  part_table.add_column("WT", style="bold green")
+  part_table.add_column("Mass (g)", justify="right", style="green")
+  part_table.add_column("Time (m)", justify="right", style="green")
+
+  display_reports = list(summary.parts_reports) + (
+      [summary.coupon_report] if summary.coupon_report is not None else []
+  )
+  for rep in display_reports:
+    dx, dy, dz = rep.oriented_dims_mm
+    part_table.add_row(
+        rep.part_name,
+        str(rep.quantity),
+        f"{dx:.1f}x{dy:.1f}x{dz:.1f}",
+        _status_badge(rep.fits_bed),
+        f"{rep.overhang_pct:.2f}%",
+        rep.support_recommendation,
+        "Yes" if rep.brim_recommended else "No",
+        _status_badge(rep.watertight),
+        f"{rep.estimated_mass_g:.1f}",
+        f"{rep.estimated_print_time_min:.1f}",
+    )
+  rich.print(part_table)
+
+  if not summary.bed_fits_all:
+    overflow_parts = [r.part_name for r in display_reports if not r.fits_bed]
+    rich.print(f"[bold yellow]Warning: Printer bed dimensions exceeded by: {', '.join(overflow_parts)}[/bold yellow]")
+  if not fitment_ok:
+    bad_joints = [c.joint_name for c in summary.fitment_checks if not c.is_valid]
+    rich.print(f"[bold yellow]Warning: Fitment audit check(s) flagged: {', '.join(bad_joints)}[/bold yellow]")
+  for rep in display_reports:
+    for warn in rep.warnings:
+      rich.print(f"[yellow]Note ({rep.part_name}):[/yellow] {warn}")
+
+  if summary.static_collisions or summary.kinematic_collisions:
+    for hit in summary.static_collisions:
+      rich.print(f"[bold red]Static Collision:[/bold red] {hit}")
+    for hit in summary.kinematic_collisions:
+      rich.print(f"[bold red]Kinematic Collision:[/bold red] {hit}")
+    raise typer.Exit(code=1)
+
+  if not summary.all_watertight:
+    bad_wt = [r.part_name for r in display_reports if not r.watertight]
+    rich.print(f"[bold red]Non-watertight STL(s):[/bold red] {', '.join(bad_wt)}")
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
