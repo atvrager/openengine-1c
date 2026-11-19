@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 from build123d import Part, export_stl
 import numpy as np
 
+from openengine.printing.materials import DEFAULT_FILAMENT_NAME
 from openengine.printing.orientation import (
     BED_FIT_EPS_MM,
     DEFAULT_MAX_OVERHANG_DEG,
@@ -93,6 +94,7 @@ class PartPrintReport:
   triangle_count: int
   watertight: bool
   warnings: List[str]
+  filament_type: str = DEFAULT_FILAMENT_NAME
 
 
 def _read_binary_stl_arrays(
@@ -360,8 +362,14 @@ def analyze_part_printability(
     orient_first: bool = False,
     preferred_rotation_xyz_deg: Optional[Tuple[float, float, float]] = None,
     compensate_shrinkage: bool = False,
+    filament_type: Optional[str] = None,
 ) -> PartPrintReport:
   """Export a Part to binary STL and evaluate printability, supports, mass, and print time."""
+  resolved_filament_type = (
+      str(filament_type)
+      if filament_type is not None
+      else (cfg.filament_profile.name if cfg is not None else DEFAULT_FILAMENT_NAME)
+  )
   (
       eff_oh_deg,
       eff_bed_mm,
@@ -499,4 +507,5 @@ def analyze_part_printability(
       triangle_count=tri_count,
       watertight=watertight,
       warnings=warnings_list,
+      filament_type=resolved_filament_type,
   )

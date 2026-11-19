@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from openengine.printing.analysis import PartPrintReport
 from openengine.printing.coupon import coupon_bore_radial_offsets_mm
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
 
 MINUTES_PER_HOUR: float = 60.0
 PCT_SCALE: float = 100.0
+STANDARD_SPOOL_MASS_G: float = 1000.0
+
+
+def _format_filament_mass_inline(mass_by_type: Mapping[str, float]) -> str:
+  """Format a filament-type mass map as ``TYPE: X.X g`` pairs."""
+  if not mass_by_type:
+    return "0.0 g"
+  return ", ".join(f"{fil}: {mass:.1f} g" for fil, mass in mass_by_type.items())
 
 
 def _format_duration(minutes: float) -> str:
@@ -46,6 +55,7 @@ def _format_header_section(summary: PrintKitSummary) -> list[str]:
   fitment_ok = all(c.is_valid for c in summary.fitment_checks)
   snaps_ok = all(d.is_safe for d in summary.snap_fit_designs.values())
 
+  filament_breakdown = _format_filament_mass_inline(summary.filament_mass_by_type_g)
   lines = [
       "# OpenEngine-1C 3D-Printable Snap-Fit Model Kit Guide",
       "",
@@ -53,9 +63,15 @@ def _format_header_section(summary: PrintKitSummary) -> list[str]:
       f"- **Selected Filament:** `{profile.name}` (Density `{profile.density_g_cm3:.2f} g/cm^3`, HDT `{profile.hdt_c:.0f} C`)",
       f"- **Printer Envelope:** `{bx:.0f} x {by:.0f} x {bz:.0f} mm` (`{cfg.nozzle_diameter_mm:.2f} mm` nozzle, `{cfg.layer_height_mm:.2f} mm` layer height)",
       f"- **Kit BOM Totals:** `{summary.total_unique_parts}` unique STLs / `{summary.total_printed_pieces}` printed pieces",
+      f"- **Total Filament Mass by Type:** `{filament_breakdown}` (Kit Total: `{summary.total_mass_g:.1f} g`)",
       f"- **Estimated Kit Filament & Print Time:** `{summary.total_mass_g:.1f} g` | `{_format_duration(summary.total_print_time_min)}`",
       f"- **Verification Gates:** Bed Fit `{'PASS' if summary.bed_fits_all else 'FAIL'}` | Watertight `{'PASS' if summary.all_watertight else 'FAIL'}` | Collisions `{'PASS (0 hits)' if collisions_ok else 'FAIL'}` | Fitment & Snaps `{'PASS' if (fitment_ok and snaps_ok) else 'FAIL'}`",
   ]
+  if summary.plate_packing is not None:
+    pp = summary.plate_packing
+    lines.append(
+        f"- **Packed Build Plates:** `{len(pp.plates)}` meta-STLs in `plates/` (`{pp.total_placed_pieces}/{summary.total_printed_pieces}` pieces, mode=`{pp.group_mode}`, margin=`{pp.margin_mm:.1f} mm`, gap=`{pp.gap_mm:.1f} mm` / brim=`{pp.brim_gap_mm:.1f} mm`)"
+    )
   if summary.assembled_preview_stl_path is not None:
     lines.append(
         f"- **Assembled Preview STL (Reference Only, Not For Printing):** `{_format_rel_stl_path(summary.assembled_preview_stl_path, summary.guide_path.parent)}`"
@@ -91,7 +107,44 @@ def _format_filament_and_slicer_section(summary: PrintKitSummary) -> list[str]:
       f"| **Layer Height / Nozzle** | `{cfg.layer_height_mm:.2f} mm` / `{cfg.nozzle_diameter_mm:.2f} mm` | All horizontal bores use 45-deg teardrop crests |",
       f"| **Pre-Applied Shrinkage Factors** | `X={sx:.5f} (+{xy_pct:.2f}%)`, `Y={sy:.5f} (+{xy_pct:.2f}%)`, `Z={sz:.5f} (+{z_pct:.2f}%)` | **Already baked into exported STLs** -- keep slicer XYZ scale at `100%` |",
       f"| **Active Radial Clearances** | Run `{running_clearance_radial_mm(cfg):.3f} mm`, Slip `{slip_clearance_radial_mm(cfg):.3f} mm`, Snap `{snap_clearance_mm(cfg):.3f} mm`, Press `{press_interference_radial_mm(cfg):.3f} mm` | User `--clearance-bias`: `{cfg.clearance_bias_mm:+.3f} mm` |",
+      "",
+      "### Total Filament Mass by Filament Type",
+      "",
+      "| Filament Type | Kit Pieces | Kit Mass (g) | Coupon Mass (g) | Total Mass (g) | 1 kg Spool Share |",
+      "| :--- | :---: | :---: | :---: | :---: | :---: |",
+      *_format_filament_mass_rows(summary),
   ]
+
+
+def _format_filament_mass_rows(summary: PrintKitSummary) -> list[str]:
+  """Build table rows breaking down total filament mass by filament type."""
+  piece_counts: dict[str, int] = {}
+  for rep in summary.parts_reports:
+    piece_counts[rep.filament_type] = piece_counts.get(rep.filament_type, 0) + rep.quantity
+
+  coupon_fil = summary.coupon_report.filament_type if summary.coupon_report is not None else None
+  coupon_mass = summary.coupon_report.estimated_mass_g if summary.coupon_report is not None else 0.0
+
+  rows: list[str] = []
+  total_kit_g = 0.0
+  total_coupon_g = 0.0
+  for fil_name, kit_mass_g in summary.filament_mass_by_type_g.items():
+    c_mass = coupon_mass if coupon_fil == fil_name else 0.0
+    combined = kit_mass_g + c_mass
+    spool_pct = (combined / STANDARD_SPOOL_MASS_G) * PCT_SCALE
+    total_kit_g += kit_mass_g
+    total_coupon_g += c_mass
+    rows.append(
+        f"| `{fil_name}` | {piece_counts.get(fil_name, 0)} | {kit_mass_g:.1f} | "
+        f"{c_mass:.1f} | {combined:.1f} | {spool_pct:.1f}% |"
+    )
+
+  grand_total = total_kit_g + total_coupon_g
+  rows.append(
+      f"| **All Filaments** | **{summary.total_printed_pieces}** | **{total_kit_g:.1f}** | "
+      f"**{total_coupon_g:.1f}** | **{grand_total:.1f}** | **{(grand_total / STANDARD_SPOOL_MASS_G) * PCT_SCALE:.1f}%** |"
+  )
+  return rows
 
 
 def _format_coupon_section(summary: PrintKitSummary) -> list[str]:
@@ -268,6 +321,66 @@ def _format_assembly_order_section() -> list[str]:
   ]
 
 
+def _format_packed_plates_section(summary: PrintKitSummary) -> list[str]:
+  """Build the ready-to-slice packed build plates section when plate packing is active."""
+  packing = summary.plate_packing
+  if packing is None:
+    return []
+
+  guide_dir = summary.guide_path.parent
+  lines = [
+      "## Packed Build Plates (Ready-to-Slice Meta-STLs)",
+      "",
+      (
+          f"Grouped with `--plate-group {packing.group_mode}` "
+          f"(`{len(packing.plates)}` plates, `{packing.total_placed_pieces}` pieces placed, "
+          f"edge margin `{packing.margin_mm:.1f} mm`, gap `{packing.gap_mm:.1f} mm` / "
+          f"brim gap `{packing.brim_gap_mm:.1f} mm`). Individual part STLs remain in `parts/` "
+          "for single-part reprints; the calibration coupon stays separate."
+      ),
+      "",
+      "| Plate | Group | Pieces | Used XYZ (mm) | Bed % | Supports | Brim | Filament Mass | Est. Time (min) | Watertight | STL Path |",
+      "| :--- | :--- | :---: | :--- | :---: | :--- | :---: | :--- | :---: | :---: | :--- |",
+  ]
+
+  for plate in packing.plates:
+    ux, uy, uz = plate.used_dims_mm
+    rel_path = _format_rel_stl_path(plate.stl_path, guide_dir)
+    fil_str = _format_filament_mass_inline(plate.filament_mass_by_type_g)
+    lines.append(
+        f"| `{plate.plate_name}` | {plate.group_label} | {plate.piece_count} | "
+        f"`{ux:.1f} x {uy:.1f} x {uz:.1f}` | {plate.bed_utilization_pct:.1f}% | "
+        f"`{plate.support_recommendation}` | {'Yes' if plate.brim_recommended else 'No'} | "
+        f"{fil_str} | {plate.estimated_print_time_min:.1f} | "
+        f"{'PASS' if plate.watertight else 'FAIL'} | `{rel_path}` |"
+    )
+
+  lines.extend(["", "### Plate Contents", ""])
+  for plate in packing.plates:
+    counts = Counter(p.part_name for p in plate.placements)
+    part_list = ", ".join(
+        f"`{name}` (x{qty})" if qty > 1 else f"`{name}`"
+        for name, qty in sorted(counts.items())
+    )
+    lines.append(
+        f"- **`{plate.plate_name}`** (`{plate.piece_count}` pcs, supports=`{plate.support_recommendation}`, brim=`{'Yes' if plate.brim_recommended else 'No'}`): {part_list}"
+    )
+
+  if packing.unplaced_parts:
+    unplaced_str = ", ".join(f"`{name}`" for name in packing.unplaced_parts)
+    lines.extend(["", f"> [!WARNING]", f"> **Unplaced Oversized Parts (Exceed Printer Bed):** {unplaced_str}"])
+
+  plate_warnings = [
+      f"- `{plate.plate_name}`: {msg}"
+      for plate in packing.plates
+      for msg in plate.warnings
+  ]
+  if plate_warnings:
+    lines.extend(["", "### Plate Packing Notes", "", *plate_warnings])
+
+  return lines
+
+
 def write_print_guide_markdown(summary: PrintKitSummary, output_path: Path) -> Path:
   """Generate the comprehensive Markdown Print & Assembly Guide at ``output_path``."""
   target_path = Path(output_path)
@@ -279,13 +392,18 @@ def write_print_guide_markdown(summary: PrintKitSummary, output_path: Path) -> P
       _format_filament_and_slicer_section(summary),
       ["", "---", ""],
       _format_coupon_section(summary),
+  ]
+  packed_plates_section = _format_packed_plates_section(summary)
+  if packed_plates_section:
+    sections.extend([["", "---", ""], packed_plates_section])
+  sections.extend([
       ["", "---", ""],
       _format_parts_table_section(summary),
       ["", "---", ""],
       _format_fitment_and_snap_section(summary),
       ["", "---", ""],
       _format_assembly_order_section(),
-  ]
+  ])
   lines: list[str] = []
   for block in sections:
     lines.extend(block)

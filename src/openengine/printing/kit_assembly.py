@@ -64,6 +64,11 @@ from openengine.printing.orientation import (
     bake_part_transform,
     orient_part_for_printing,
 )
+from openengine.printing.packing import (
+    BuildPlateReport,
+    PlatePackingResult,
+    pack_print_kit_plates,
+)
 from openengine.printing.tolerances import (
     KitPart,
     PrintKitConfig,
@@ -131,6 +136,7 @@ class PrintKitSummary:
   total_unique_parts: int
   total_printed_pieces: int
   total_mass_g: float
+  filament_mass_by_type_g: dict[str, float]
   total_print_time_min: float
   bed_fits_all: bool
   all_watertight: bool
@@ -144,6 +150,25 @@ class PrintKitSummary:
   manifest_path: Path
   guide_path: Path
   assembled_preview_stl_path: Optional[Path]
+  plate_packing: Optional[PlatePackingResult] = None
+
+
+def compute_filament_mass_by_type_g(
+    parts_reports: Sequence[PartPrintReport],
+    *,
+    primary_filament: Optional[str] = None,
+) -> dict[str, float]:
+  """Aggregate total filament mass in grams separated by filament type across kit parts."""
+  totals: dict[str, float] = {}
+  for rep in parts_reports:
+    fil = str(rep.filament_type)
+    totals[fil] = totals.get(fil, 0.0) + (float(rep.estimated_mass_g) * int(rep.quantity))
+
+  ordered_keys = sorted(
+      totals.keys(),
+      key=lambda name: (0 if (primary_filament is not None and name == primary_filament) else 1, name),
+  )
+  return {name: round(totals[name], 3) for name in ordered_keys}
 
 
 def _merge_disjoint_parts(
@@ -710,6 +735,34 @@ def _serialize_part_report(
   return payload
 
 
+def _serialize_plate_report(plate: BuildPlateReport) -> dict[str, Any]:
+  """Convert a ``BuildPlateReport`` to a JSON-serializable dictionary."""
+  payload = asdict(plate)
+  payload["stl_path"] = str(plate.stl_path)
+  payload["used_dims_mm"] = list(plate.used_dims_mm)
+  payload["bed_dims_mm"] = list(plate.bed_dims_mm)
+  payload["warnings"] = list(plate.warnings)
+  return payload
+
+
+def _serialize_plate_packing(packing: PlatePackingResult) -> dict[str, Any]:
+  """Convert a ``PlatePackingResult`` to a JSON-serializable manifest section."""
+  return {
+      "group_mode": packing.group_mode,
+      "margin_mm": packing.margin_mm,
+      "gap_mm": packing.gap_mm,
+      "brim_gap_mm": packing.brim_gap_mm,
+      "plates_dir": str(packing.plates_dir),
+      "plate_count": len(packing.plates),
+      "total_placed_pieces": packing.total_placed_pieces,
+      "unplaced_parts": list(packing.unplaced_parts),
+      "filament_mass_by_type_g": dict(packing.filament_mass_by_type_g),
+      "all_watertight": packing.all_watertight,
+      "all_fit_bed": packing.all_fit_bed,
+      "plates": [_serialize_plate_report(plate) for plate in packing.plates],
+  }
+
+
 def _write_kit_manifest(
     summary: PrintKitSummary,
     bom_parts: Mapping[str, KitPart],
@@ -737,7 +790,16 @@ def _write_kit_manifest(
           "total_unique_parts": summary.total_unique_parts,
           "total_printed_pieces": summary.total_printed_pieces,
           "total_mass_g": round(summary.total_mass_g, 3),
+          "total_filament_mass_by_type_g": dict(summary.filament_mass_by_type_g),
+          "coupon_mass_g": (
+              round(summary.coupon_report.estimated_mass_g, 3)
+              if summary.coupon_report is not None
+              else 0.0
+          ),
           "total_print_time_min": round(summary.total_print_time_min, 2),
+          "packed_plate_count": (
+              len(summary.plate_packing.plates) if summary.plate_packing is not None else 0
+          ),
           "bed_fits_all": summary.bed_fits_all,
           "all_watertight": summary.all_watertight,
           "coupon_included": summary.coupon_report is not None,
@@ -759,6 +821,11 @@ def _write_kit_manifest(
           )
           for rep in summary.parts_reports
       ],
+      "plates": (
+          _serialize_plate_packing(summary.plate_packing)
+          if summary.plate_packing is not None
+          else None
+      ),
       "coupon": (
           _serialize_part_report(summary.coupon_report, None, None)
           if summary.coupon_report is not None
@@ -766,6 +833,11 @@ def _write_kit_manifest(
       ),
       "artifacts": {
           "stl_dir": str(summary.stl_dir),
+          "plates_dir": (
+              str(summary.plate_packing.plates_dir)
+              if summary.plate_packing is not None
+              else None
+          ),
           "manifest_path": str(summary.manifest_path),
           "guide_path": str(summary.guide_path),
           "assembled_preview_stl_path": (
@@ -888,13 +960,33 @@ def run_print_kit_workflow(
     )
     assembled_preview_stl_path = preview_stl_path
 
+  plate_packing: Optional[PlatePackingResult] = None
+  if cfg.pack_plates:
+    plate_packing = pack_print_kit_plates(
+        parts_reports=parts_reports,
+        output_dir=out_dir / "plates",
+        printer_bed_mm=cfg.printer_bed_mm,
+        part_categories={name: kp.category for name, kp in bom_parts.items()},
+        group_mode=cfg.plate_group_mode,
+        margin_mm=cfg.plate_margin_mm,
+        gap_mm=cfg.plate_gap_mm,
+    )
+
   all_reports = list(parts_reports) + ([coupon_report] if coupon_report is not None else [])
   total_unique_parts = len(parts_reports)
   total_printed_pieces = sum(r.quantity for r in parts_reports)
   total_mass_g = sum(r.estimated_mass_g * r.quantity for r in parts_reports)
+  filament_mass_by_type_g = compute_filament_mass_by_type_g(
+      parts_reports,
+      primary_filament=profile.name,
+  )
   total_print_time_min = sum(r.estimated_print_time_min * r.quantity for r in parts_reports)
-  bed_fits_all = all(r.fits_bed for r in all_reports)
-  all_watertight = all(r.watertight for r in all_reports)
+  bed_fits_all = all(r.fits_bed for r in all_reports) and (
+      plate_packing.all_fit_bed if plate_packing is not None else True
+  )
+  all_watertight = all(r.watertight for r in all_reports) and (
+      plate_packing.all_watertight if plate_packing is not None else True
+  )
 
   manifest_path = out_dir / "print_kit_manifest.json"
   guide_path = out_dir / "print_guide.md"
@@ -905,6 +997,7 @@ def run_print_kit_workflow(
       total_unique_parts=total_unique_parts,
       total_printed_pieces=total_printed_pieces,
       total_mass_g=total_mass_g,
+      filament_mass_by_type_g=filament_mass_by_type_g,
       total_print_time_min=total_print_time_min,
       bed_fits_all=bed_fits_all,
       all_watertight=all_watertight,
@@ -918,6 +1011,7 @@ def run_print_kit_workflow(
       manifest_path=manifest_path,
       guide_path=guide_path,
       assembled_preview_stl_path=assembled_preview_stl_path,
+      plate_packing=plate_packing,
   )
 
   _write_kit_manifest(summary, bom_parts=bom_parts, orient_results=orient_results)

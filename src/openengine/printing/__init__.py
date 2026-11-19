@@ -9,6 +9,7 @@ from . import (
     kit_valvetrain,
     materials,
     orientation,
+    packing,
     primitives,
     report,
     tolerances,
@@ -28,6 +29,7 @@ from .kit_assembly import (
     PrintKitSummary,
     build_full_kit_assembly_parts,
     build_full_kit_parts,
+    compute_filament_mass_by_type_g,
     run_print_kit_workflow,
     verify_kit_fitment_and_collisions,
 )
@@ -58,6 +60,17 @@ from .orientation import (
     extract_part_triangles,
     orient_part_for_printing,
 )
+from .packing import (
+    BuildPlateReport,
+    DEFAULT_BRIM_PLATE_GAP_MM,
+    DEFAULT_PLATE_GAP_MM,
+    DEFAULT_PLATE_GROUP_MODE,
+    DEFAULT_PLATE_MARGIN_MM,
+    PlatePackingResult,
+    PlatePlacement,
+    VALID_PLATE_GROUP_MODES,
+    pack_print_kit_plates,
+)
 from .primitives import (
     make_alignment_hole_cutter,
     make_alignment_pin,
@@ -85,7 +98,12 @@ from .tolerances import (
 )
 
 __all__ = [
+    "BuildPlateReport",
+    "DEFAULT_BRIM_PLATE_GAP_MM",
     "DEFAULT_FILAMENT_NAME",
+    "DEFAULT_PLATE_GAP_MM",
+    "DEFAULT_PLATE_GROUP_MODE",
+    "DEFAULT_PLATE_MARGIN_MM",
     "FILAMENT_PROFILES",
     "FilamentProfile",
     "FitmentCheckItem",
@@ -94,9 +112,12 @@ __all__ = [
     "MeshPrintMetrics",
     "OrientedPartResult",
     "PartPrintReport",
+    "PlatePackingResult",
+    "PlatePlacement",
     "PrintKitConfig",
     "PrintKitSummary",
     "SnapFitDesign",
+    "VALID_PLATE_GROUP_MODES",
     "analysis",
     "analyze_part_printability",
     "apply_shrinkage_compensation",
@@ -110,6 +131,7 @@ __all__ = [
     "build_kit_rotating_parts",
     "build_kit_valvetrain_assembly_parts",
     "build_kit_valvetrain_parts",
+    "compute_filament_mass_by_type_g",
     "compute_mesh_print_metrics",
     "coupon",
     "coupon_bore_radial_offsets_mm",
@@ -135,6 +157,8 @@ __all__ = [
     "min_printable_wall_mm",
     "orient_part_for_printing",
     "orientation",
+    "pack_print_kit_plates",
+    "packing",
     "press_interference_radial_mm",
     "primitives",
     "report",

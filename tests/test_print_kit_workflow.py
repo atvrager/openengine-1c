@@ -59,6 +59,11 @@ def test_printing_package_public_exports() -> None:
       "verify_kit_fitment_and_collisions",
       "run_print_kit_workflow",
       "write_print_guide_markdown",
+      "pack_print_kit_plates",
+      "compute_filament_mass_by_type_g",
+      "BuildPlateReport",
+      "PlatePackingResult",
+      "PlatePlacement",
       "FitmentCheckItem",
       "PrintKitSummary",
   )
@@ -120,6 +125,12 @@ def test_end_to_end_workflow_petg_and_pla_comparison(tmp_path: Path) -> None:
   assert summary_petg.total_unique_parts == 33
   assert summary_petg.total_printed_pieces == 42
   assert summary_petg.total_mass_g > 0.0
+  assert list(summary_petg.filament_mass_by_type_g.keys()) == ["PETG"]
+  assert abs(summary_petg.filament_mass_by_type_g["PETG"] - summary_petg.total_mass_g) <= 0.05
+  assert summary_petg.plate_packing is not None
+  assert summary_petg.plate_packing.total_placed_pieces == 42
+  assert summary_petg.plate_packing.all_watertight is True
+  assert summary_petg.plate_packing.all_fit_bed is True
   assert summary_petg.total_print_time_min > 0.0
   assert summary_petg.bed_fits_all is True
   assert summary_petg.all_watertight is True
@@ -231,7 +242,10 @@ def test_cli_print_kit_command(tmp_path: Path) -> None:
   assert (ok_dir / "print_kit_manifest.json").is_file()
   assert (ok_dir / "print_guide.md").is_file()
   assert len(list((ok_dir / "parts").glob("*.stl"))) == 33
+  assert len(list((ok_dir / "plates").glob("plate_*.stl"))) >= 1
   assert "OpenEngine Print Kit Summary" in res_ok.output
+  assert "Total Filament Mass by Type" in res_ok.output
+  assert "Packed Build Plates" in res_ok.output
 
   # 2. Tight bed overflow prints warning but still exits 0 (not collision/watertight/config failure)
   tight_dir = tmp_path / "cli_tight_bed"

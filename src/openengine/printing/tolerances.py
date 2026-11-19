@@ -23,6 +23,13 @@ DEFAULT_LAYER_HEIGHT_MM: float = 0.2
 DEFAULT_BED_DIMS_MM: tuple[float, float, float] = (256.0, 256.0, 256.0)
 DEFAULT_INFILL_PCT: float = 20.0
 DEFAULT_WALL_LOOPS: int = 3
+VALID_PLATE_GROUP_MODES: tuple[str, ...] = ("fewest", "slicer", "category")
+DEFAULT_PLATE_GROUP_MODE: str = "fewest"
+DEFAULT_PLATE_MARGIN_MM: float = 8.0
+DEFAULT_PLATE_GAP_MM: float = 6.0
+DEFAULT_BRIM_PLATE_GAP_MM: float = 12.0
+MIN_PLATE_MARGIN_MM: float = 0.0
+MIN_PLATE_GAP_MM: float = 0.5
 
 MIN_NOZZLE_DIAMETER_MM: float = 0.15
 MAX_NOZZLE_DIAMETER_MM: float = 1.2
@@ -81,6 +88,10 @@ class PrintKitConfig:
     wall_loops: Perimeter wall loop count (>= 1).
     clearance_bias_mm: Additive user calibration offset (positive loosens fits).
     include_coupon: Whether to include the filament tolerance calibration coupon.
+    pack_plates: Whether to pack kit parts into merged build-plate meta-STLs.
+    plate_group_mode: Plate grouping strategy (``"fewest"``, ``"slicer"``, ``"category"``).
+    plate_margin_mm: Minimum bed-edge clearance margin in mm on packed plates.
+    plate_gap_mm: Minimum inter-part XY spacing in mm on non-brim packed plates.
   """
 
   scale: float = DEFAULT_KIT_SCALE
@@ -93,6 +104,10 @@ class PrintKitConfig:
   wall_loops: int = DEFAULT_WALL_LOOPS
   clearance_bias_mm: float = 0.0
   include_coupon: bool = True
+  pack_plates: bool = True
+  plate_group_mode: str = DEFAULT_PLATE_GROUP_MODE
+  plate_margin_mm: float = DEFAULT_PLATE_MARGIN_MM
+  plate_gap_mm: float = DEFAULT_PLATE_GAP_MM
 
   def __post_init__(self) -> None:
     self.scale = float(self.scale)
@@ -129,6 +144,25 @@ class PrintKitConfig:
     if self.wall_loops < 1:
       raise ValueError(f"wall_loops must be >= 1, got {self.wall_loops}")
     self.clearance_bias_mm = float(self.clearance_bias_mm)
+    self.pack_plates = bool(self.pack_plates)
+
+    self.plate_group_mode = str(self.plate_group_mode).strip().lower()
+    if self.plate_group_mode not in VALID_PLATE_GROUP_MODES:
+      raise ValueError(
+          f"plate_group_mode must be one of {VALID_PLATE_GROUP_MODES}, got {self.plate_group_mode!r}"
+      )
+
+    self.plate_margin_mm = float(self.plate_margin_mm)
+    if self.plate_margin_mm < MIN_PLATE_MARGIN_MM:
+      raise ValueError(
+          f"plate_margin_mm must be >= {MIN_PLATE_MARGIN_MM}, got {self.plate_margin_mm}"
+      )
+
+    self.plate_gap_mm = float(self.plate_gap_mm)
+    if self.plate_gap_mm < MIN_PLATE_GAP_MM:
+      raise ValueError(
+          f"plate_gap_mm must be >= {MIN_PLATE_GAP_MM}, got {self.plate_gap_mm}"
+      )
 
   @property
   def filament_profile(self) -> FilamentProfile:

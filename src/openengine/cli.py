@@ -1777,6 +1777,26 @@ def print_kit(
     wall_loops: int = typer.Option(3, "--wall-loops", help="Perimeter wall loop count (>= 1)"),
     clearance_bias: float = typer.Option(0.0, "--clearance-bias", help="Additive radial clearance offset in mm"),
     coupon: bool = typer.Option(True, "--coupon/--no-coupon", help="Include filament tolerance calibration coupon STL"),
+    pack_plates: bool = typer.Option(
+        True,
+        "--pack-plates/--no-pack-plates",
+        help="Pack kit parts onto merged build-plate meta-STLs in plates/",
+    ),
+    plate_group: str = typer.Option(
+        "fewest",
+        "--plate-group",
+        help="Plate grouping strategy: fewest (default), slicer (support+brim), or category",
+    ),
+    plate_margin: float = typer.Option(
+        8.0,
+        "--plate-margin",
+        help="Minimum clearance margin from printer bed edges in mm",
+    ),
+    plate_gap: float = typer.Option(
+        6.0,
+        "--plate-gap",
+        help="Minimum XY gap between parts on non-brim plates in mm (brim plates use >= 12 mm)",
+    ),
     assembled_preview: bool = typer.Option(
         False,
         "--assembled-preview/--no-assembled-preview",
@@ -1803,6 +1823,10 @@ def print_kit(
         wall_loops=wall_loops,
         clearance_bias_mm=clearance_bias,
         include_coupon=coupon,
+        pack_plates=pack_plates,
+        plate_group_mode=plate_group,
+        plate_margin_mm=plate_margin,
+        plate_gap_mm=plate_gap,
     )
   except (ValueError, KeyError) as exc:
     rich.print(f"[bold red]Invalid print-kit configuration:[/bold red] {exc}")
@@ -1833,7 +1857,20 @@ def print_kit(
   summary_table.add_row("Filament / Nozzle / Layer", f"{summary.filament_profile.name} | {cfg.nozzle_diameter_mm:.2f} mm / {cfg.layer_height_mm:.2f} mm")
   summary_table.add_row("Bed Envelope / Cutaway", f"{bed_dims[0]:.0f}x{bed_dims[1]:.0f}x{bed_dims[2]:.0f} mm | {'ON' if cfg.cutaway else 'OFF'}")
   summary_table.add_row("Unique Parts / Total Pieces", f"{summary.total_unique_parts} unique STLs / {summary.total_printed_pieces} pieces")
+  filament_mass_str = ", ".join(
+      f"{fil}: {mass:.1f} g" for fil, mass in summary.filament_mass_by_type_g.items()
+  )
+  summary_table.add_row(
+      "Total Filament Mass by Type",
+      f"{filament_mass_str} (Total: {summary.total_mass_g:.1f} g)",
+  )
   summary_table.add_row("Est. Filament Mass / Print Time", f"{summary.total_mass_g:.1f} g / {summary.total_print_time_min:.1f} min ({summary.total_print_time_min / 60.0:.2f} h)")
+  if summary.plate_packing is not None:
+    pp = summary.plate_packing
+    summary_table.add_row(
+        "Packed Build Plates",
+        f"{len(pp.plates)} plates ({pp.total_placed_pieces}/{summary.total_printed_pieces} pcs, group={pp.group_mode}) | {pp.plates_dir}",
+    )
   summary_table.add_row("All Parts Fit Bed", _status_badge(summary.bed_fits_all))
   summary_table.add_row("All STLs Watertight", _status_badge(summary.all_watertight))
   summary_table.add_row(
@@ -1845,6 +1882,42 @@ def print_kit(
   if summary.assembled_preview_stl_path is not None:
     summary_table.add_row("Assembled Preview STL", str(summary.assembled_preview_stl_path))
   rich.print(summary_table)
+
+  if summary.plate_packing is not None:
+    pp = summary.plate_packing
+    plate_table = Table(
+        title=f"Packed Build Plates ({len(pp.plates)} Meta-STLs, mode={pp.group_mode})",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    plate_table.add_column("Plate", style="cyan")
+    plate_table.add_column("Group", style="white")
+    plate_table.add_column("Pcs", justify="right", style="white")
+    plate_table.add_column("Used XYZ (mm)", style="green")
+    plate_table.add_column("Bed %", justify="right", style="yellow")
+    plate_table.add_column("Supports", style="magenta")
+    plate_table.add_column("Brim", style="white")
+    plate_table.add_column("WT", style="bold green")
+    plate_table.add_column("Filament Mass", style="green")
+    plate_table.add_column("Time (m)", justify="right", style="green")
+    for plate in pp.plates:
+      ux, uy, uz = plate.used_dims_mm
+      plate_fil_str = ", ".join(
+          f"{fil}: {mass:.1f}g" for fil, mass in plate.filament_mass_by_type_g.items()
+      )
+      plate_table.add_row(
+          plate.plate_name,
+          plate.group_label,
+          str(plate.piece_count),
+          f"{ux:.1f}x{uy:.1f}x{uz:.1f}",
+          f"{plate.bed_utilization_pct:.1f}%",
+          plate.support_recommendation,
+          "Yes" if plate.brim_recommended else "No",
+          _status_badge(plate.watertight),
+          plate_fil_str,
+          f"{plate.estimated_print_time_min:.1f}",
+      )
+    rich.print(plate_table)
 
   part_table = Table(
       title=f"Printable Kit Parts ({summary.total_unique_parts} Kit STLs)",
@@ -1890,6 +1963,15 @@ def print_kit(
   for rep in display_reports:
     for warn in rep.warnings:
       rich.print(f"[yellow]Note ({rep.part_name}):[/yellow] {warn}")
+  if summary.plate_packing is not None:
+    if summary.plate_packing.unplaced_parts:
+      rich.print(
+          f"[bold yellow]Warning: Unplaced oversized parts on plates: "
+          f"{', '.join(summary.plate_packing.unplaced_parts)}[/bold yellow]"
+      )
+    for plate in summary.plate_packing.plates:
+      for warn in plate.warnings:
+        rich.print(f"[yellow]Plate Note ({plate.plate_name}):[/yellow] {warn}")
 
   if summary.static_collisions or summary.kinematic_collisions:
     for hit in summary.static_collisions:
@@ -1900,6 +1982,8 @@ def print_kit(
 
   if not summary.all_watertight:
     bad_wt = [r.part_name for r in display_reports if not r.watertight]
+    if summary.plate_packing is not None:
+      bad_wt.extend(p.plate_name for p in summary.plate_packing.plates if not p.watertight)
     rich.print(f"[bold red]Non-watertight STL(s):[/bold red] {', '.join(bad_wt)}")
     raise typer.Exit(code=1)
 
