@@ -521,18 +521,9 @@ def _head_to_block_pins_and_snaps(
       )
       joints.append(joint)
 
-      # Shallow side guide notch across block top deck Z in [-10*s, 0] for flush tab seating.
-      d_design = auto_size_cantilever_snap(
-          cfg, available_length_mm=l_snap, width_mm=w_snap, retention_angle_deg=45.0
-      )
-      c = d_design.clearance_mm
-      notch_depth = d_design.tip_thickness_mm + d_design.undercut_mm + c
-      notch_h = TOP_DECK_THICK_MM * s + 1.0
-      x_mid = x_outer - sx_sign * HALF_FACTOR * notch_depth
-      with BuildPart() as notch_bp:
-        with Locations((x_mid, sy, -HALF_FACTOR * TOP_DECK_THICK_MM * s)):
-          Box(notch_depth + 0.5, d_design.beam_width_mm + 2.0 * c, notch_h)
-      block_side_notches.append(notch_bp.part)
+      # Cut the mating snap pocket into the block top deck so the catch lip
+      # beneath Z = -TOP_DECK_THICK_MM * s remains intact to retain the barb.
+      block_side_notches.append(joint.pocket_cutter)
 
   return pins, holes, joints, block_side_notches
 

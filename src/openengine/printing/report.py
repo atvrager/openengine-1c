@@ -185,13 +185,13 @@ def _format_coupon_section(summary: PrintKitSummary) -> list[str]:
     ])
 
   lines.extend([
-      "Test the printed `5.0 mm` nominal peg in the 5 numbered bores (tally dimples 1..5 along front edge) and snap the flat-XY cantilever latch into its open-top pocket:",
+      "Test the printed `5.0 mm` nominal peg in the 5 numbered bores (tally dimples 1..5 along front edge) and slide the dovetail-guided cantilever latch horizontally into its receiver until it clicks shut (nudge the visible barb tip inward to release):",
       "",
       "| Bore # (Dimples) | Radial Offset (mm) | Expected Physical Fit | Action if Off-Target |",
       "| :---: | :---: | :--- | :--- |",
       f"| **1** | `{offsets[0]:+.3f}` | Light press interference (requires firm push) | If loose, your printer under-extrudes or shrinks less -> `--clearance-bias -0.05` |",
       f"| **2** | `{offsets[1]:+.3f}` | Zero-clearance line-to-line reference | Peg should bind or require heavy force |",
-      f"| **3** | `{offsets[2]:+.3f}` | Tight half-slip reference | Should feel snug with slight drag |",
+      f"| **3** | `{offsets[2]:+.3f}` | Tight half-slip reference | Should feel snug with slight drag; if already smooth slip, tighten with `--clearance-bias -0.08` to `-0.10` |",
       f"| **4** | `{offsets[3]:+.3f}` | **Target Slip Fit** (pins, D-keys, bushings) | Ideal smooth hand-push fit with zero wobble |",
       f"| **5** | `{offsets[4]:+.3f}` | **Target Running Fit** (bearings, piston, valves) | Free spin/slide; if tight, re-run with `--clearance-bias +0.05` |",
       "",

@@ -2,7 +2,21 @@
 
 from typing import Tuple
 
-from build123d import Align, Box, BuildPart, Cone, Cylinder, Locations, Part, Solid, chamfer
+from build123d import (
+    Align,
+    Box,
+    BuildPart,
+    BuildSketch,
+    Cone,
+    Cylinder,
+    Locations,
+    Part,
+    Plane,
+    Polygon,
+    Solid,
+    chamfer,
+    extrude,
+)
 from OCP.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCP.TopoDS import TopoDS
 from OCP.gp import gp_Trsf
@@ -48,16 +62,27 @@ RECEIVER_MAX_X_MM: float = -5.0
 RECEIVER_MIN_Y_MM: float = PLATE_MAX_Y_MM
 RECEIVER_MAX_Y_MM: float = HALF_FACTOR * COUPON_DEPTH_Y_MM
 RECEIVER_POCKET_Z_FLOOR_MM: float = 2.0
-RECEIVER_POCKET_Y_MM: float = 9.5
+RECEIVER_POCKET_Y_MM: float = 11.0
+
+# Self-supporting 25.1-deg dovetail guide rail preventing lateral/yaw escape and +Z lift.
+GUIDE_RAIL_Y_MM: float = 4.6
+GUIDE_RAIL_LENGTH_MM: float = 11.5
+GUIDE_RAIL_BASE_HALF_W_MM: float = 1.6
+GUIDE_RAIL_TOP_HALF_W_MM: float = 0.85
+GUIDE_RAIL_BASE_Z_MM: float = 1.8
+GUIDE_RAIL_SLOPE_TOP_Z_MM: float = 3.4
+GUIDE_SLOT_DEPTH_MM: float = 12.2
+GUIDE_SLOT_ENTRY_PAD_MM: float = 0.5
+GUIDE_SLOT_TOP_OVERSHOOT_MM: float = 1.0
 
 SNAP_AVAILABLE_LEN_MM: float = 9.0
 SNAP_BEAM_WIDTH_MM: float = 5.5
 
 LATCH_GRIP_MIN_X_MM: float = 10.0
 LATCH_GRIP_MAX_X_MM: float = 14.5
-LATCH_GRIP_MIN_Y_MM: float = 5.5
+LATCH_GRIP_MIN_Y_MM: float = 2.6
 LATCH_GRIP_MAX_Y_MM: float = 15.0
-LATCH_HOOK_Y_MM: float = 9.5
+LATCH_HOOK_Y_MM: float = RECEIVER_POCKET_Y_MM
 
 PEG_TAB_MIN_X_MM: float = 17.0
 PEG_TAB_MAX_X_MM: float = 25.0
@@ -108,12 +133,54 @@ def _place_snap_flat_neg_x(
   return Part(children=placed_solids)
 
 
+def _build_dovetail_profile_extrusion(
+    x_start_mm: float,
+    x_end_mm: float,
+    z_floor_mm: float,
+    z_top_mm: float,
+    y_clearance_mm: float,
+    z_slope_offset_mm: float,
+) -> Part:
+  """Extrude the 25.1-deg dovetail rail or mating slot along X from ``x_start_mm`` to ``x_end_mm``."""
+  yc = float(y_clearance_mm)
+  zo = float(z_slope_offset_mm)
+  y_bot_lo = GUIDE_RAIL_Y_MM - GUIDE_RAIL_BASE_HALF_W_MM - yc
+  y_bot_hi = GUIDE_RAIL_Y_MM + GUIDE_RAIL_BASE_HALF_W_MM + yc
+  y_top_lo = GUIDE_RAIL_Y_MM - GUIDE_RAIL_TOP_HALF_W_MM - yc
+  y_top_hi = GUIDE_RAIL_Y_MM + GUIDE_RAIL_TOP_HALF_W_MM + yc
+  z_s0 = z_floor_mm + GUIDE_RAIL_BASE_Z_MM + zo
+  z_s1 = z_floor_mm + GUIDE_RAIL_SLOPE_TOP_Z_MM + zo
+
+  x_lo = min(x_start_mm, x_end_mm)
+  x_hi = max(x_start_mm, x_end_mm)
+  span_x = x_hi - x_lo
+
+  with BuildPart() as builder:
+    with BuildSketch(Plane.YZ.offset(x_lo)):
+      Polygon(
+          [
+              (y_bot_lo, z_floor_mm),
+              (y_bot_hi, z_floor_mm),
+              (y_bot_hi, z_s0),
+              (y_top_hi, z_s1),
+              (y_top_hi, z_top_mm),
+              (y_top_lo, z_top_mm),
+              (y_top_lo, z_s1),
+              (y_bot_lo, z_s0),
+          ],
+          align=None,
+      )
+    extrude(amount=span_x)
+  return builder.part
+
+
 def _build_gauge_and_receiver(
     cfg: PrintKitConfig,
     snap_design: SnapFitDesign,
 ) -> Solid:
-  """Build the 5-bore clearance gauge plate fused with the open-top snap-fit receiver."""
+  """Build the 5-bore clearance gauge plate fused with the guided snap-fit receiver."""
   offsets = coupon_bore_radial_offsets_mm(cfg)
+  c_guide = slip_clearance_radial_mm(cfg)
 
   with BuildPart() as plate_builder:
     with Locations((0.0, HALF_FACTOR * (PLATE_MIN_Y_MM + PLATE_MAX_Y_MM), 0.0)):
@@ -183,6 +250,17 @@ def _build_gauge_and_receiver(
           )
       cutters.append(dot_cut.part)
 
+  # Cut the precision 25.1-deg dovetail guide slot locking latch lateral/yaw/+Z motion.
+  guide_slot = _build_dovetail_profile_extrusion(
+      x_start_mm=RECEIVER_MAX_X_MM - GUIDE_SLOT_DEPTH_MM,
+      x_end_mm=RECEIVER_MAX_X_MM + GUIDE_SLOT_ENTRY_PAD_MM,
+      z_floor_mm=RECEIVER_POCKET_Z_FLOOR_MM,
+      z_top_mm=PLATE_THICKNESS_Z_MM + GUIDE_SLOT_TOP_OVERSHOOT_MM,
+      y_clearance_mm=c_guide,
+      z_slope_offset_mm=c_guide,
+  )
+  cutters.append(guide_slot)
+
   # Cut the snap-fit receiver pocket open at +X and +Z over a solid 2.0 mm floor.
   pocket_local = make_snap_pocket_cutter(snap_design, snap_design.clearance_mm)
   pocket_positioned = _place_snap_flat_neg_x(
@@ -201,7 +279,7 @@ def _build_gauge_and_receiver(
 
 
 def _build_snap_latch_solid(snap_design: SnapFitDesign) -> Solid:
-  """Build the printable cantilever snap-fit latch handle sitting flat on Z=0."""
+  """Build the printable guided cantilever snap-fit latch sitting flat on Z=0."""
   grip_w = LATCH_GRIP_MAX_X_MM - LATCH_GRIP_MIN_X_MM
   grip_d = LATCH_GRIP_MAX_Y_MM - LATCH_GRIP_MIN_Y_MM
   grip_cx = HALF_FACTOR * (LATCH_GRIP_MIN_X_MM + LATCH_GRIP_MAX_X_MM)
@@ -216,6 +294,15 @@ def _build_snap_latch_solid(snap_design: SnapFitDesign) -> Solid:
           align=(Align.CENTER, Align.CENTER, Align.MIN),
       )
 
+  guide_rail = _build_dovetail_profile_extrusion(
+      x_start_mm=LATCH_GRIP_MIN_X_MM - GUIDE_RAIL_LENGTH_MM,
+      x_end_mm=LATCH_GRIP_MIN_X_MM + 0.5,
+      z_floor_mm=0.0,
+      z_top_mm=snap_design.beam_width_mm,
+      y_clearance_mm=0.0,
+      z_slope_offset_mm=0.0,
+  )
+
   hook_local = make_cantilever_snap_hook(snap_design)
   hook_placed = _place_snap_flat_neg_x(
       hook_local,
@@ -223,7 +310,7 @@ def _build_snap_latch_solid(snap_design: SnapFitDesign) -> Solid:
       anchor_xyz_mm=(LATCH_GRIP_MIN_X_MM, LATCH_HOOK_Y_MM, 0.0),
   )
 
-  fused = grip_builder.part.fuse(hook_placed)
+  fused = grip_builder.part.fuse(guide_rail).fuse(hook_placed)
   solids = list(fused.solids())
   if len(solids) != 1:
     raise RuntimeError(f"Expected 1 solid for coupon snap latch, got {len(solids)}")
@@ -266,8 +353,8 @@ def generate_tolerance_coupon(cfg: PrintKitConfig) -> Part:
 
   Contains three separated build-plate-ready solids sitting on ``Z = 0``:
   1. A 5-bore clearance gauge plate spanning ``coupon_bore_radial_offsets_mm(cfg)``
-     plus an integrated open-top snap-fit receiver slot sized via ``snap_clearance_mm(cfg)``.
-  2. A printable cantilever snap-fit latch handle generated from
+     plus an integrated dovetail-guided snap-fit receiver sized via ``snap_clearance_mm(cfg)``.
+  2. A printable guided cantilever snap-fit latch handle generated from
      ``auto_size_cantilever_snap(cfg, ...)`` lying flat in XY for perimeter-strong bending.
   3. An upright 5.0 mm nominal test peg on a chamfered thumb tab for checking all 5 bores.
   """

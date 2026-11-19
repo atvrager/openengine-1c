@@ -236,3 +236,34 @@ def test_stl_export_watertight_and_volume_fit_05x(tmp_path: Path) -> None:
     assert rep.watertight is True, f"{name} STL is not watertight"
     assert rep.fits_print_volume is True, f"{name} exceeds print volume: {rep.oriented_dims_mm}"
     assert rep.triangle_count > 100, f"{name} has too few triangles: {rep.triangle_count}"
+
+
+def test_housing_snap_joints_physically_retain_under_pullout() -> None:
+  """Verify every mated housing snap joint clears when seated and engages its catch ledge on pull-out."""
+  cfg = PrintKitConfig(scale=0.5, filament="PETG")
+  parts = build_kit_housings_parts(cfg)
+
+  pull_checks = (
+      ("kit_crankcase_right", "kit_crankcase_left", (0.0, 1.0, 0.0)),
+      ("kit_sump_pan", "kit_crankcase_left", (0.0, 0.0, -1.0)),
+      ("kit_cylinder_block", "kit_crankcase_left", (0.0, 0.0, 1.0)),
+      ("kit_cylinder_head", "kit_cylinder_block", (0.0, 0.0, 1.0)),
+      ("kit_cam_tower", "kit_cylinder_head", (0.0, 0.0, 1.0)),
+      ("kit_cam_cover", "kit_cam_tower", (0.0, 0.0, 1.0)),
+      ("kit_right_timing_cover", "kit_crankcase_right", (0.0, 1.0, 0.0)),
+      ("kit_fan_shroud", "kit_crankcase_left", (0.0, -1.0, 0.0)),
+      ("kit_intake_carb_unit", "kit_cylinder_head", (1.0, 0.0, 0.0)),
+  )
+  for male_key, female_key, axis in pull_checks:
+    male = parts[male_key].part
+    female = parts[female_key].part
+    assert overlap_volume_mm3(male, female) == pytest.approx(0.0, abs=1.0e-3), (
+        f"Seated collision between {male_key} and {female_key}"
+    )
+    max_pull_ov = max(
+        overlap_volume_mm3(male.translate((axis[0] * d, axis[1] * d, axis[2] * d)), female)
+        for d in (1.5, 2.5, 3.5)
+    )
+    assert max_pull_ov > 2.0, (
+        f"Snap joint {male_key} -> {female_key} lacks physical catch retention (max overlap={max_pull_ov:.3f} mm^3)"
+    )

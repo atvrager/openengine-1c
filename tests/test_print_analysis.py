@@ -359,7 +359,8 @@ def test_tolerance_coupon_geometry_mating_and_watertightness(tmp_path: Path):
     clear_hit = gauge_solid.intersect(clear_peg)
     assert (sum(s.volume for s in clear_hit) if clear_hit else 0.0) == pytest.approx(0.0, abs=1.0e-5)
 
-  # Test cantilever snap-latch: clears seated pocket at (-15, 0, +2) and engages catch midway (-11.5, 0, +2).
+  # Test guided cantilever snap-latch: clears seated pocket at (-15, 0, +2), locks laterally
+  # and vertically via dovetail rail, and engages catch midway even at worst-case lateral play.
   seated_latch = latch_solid.translate((-15.0, 0.0, 2.0))
   seated_hit = gauge_solid.intersect(seated_latch)
   assert (sum(s.volume for s in seated_hit) if seated_hit else 0.0) == pytest.approx(0.0, abs=1.0e-5)
@@ -367,6 +368,22 @@ def test_tolerance_coupon_geometry_mating_and_watertightness(tmp_path: Path):
   midway_latch = latch_solid.translate((-11.5, 0.0, 2.0))
   midway_hit = gauge_solid.intersect(midway_latch)
   assert (sum(s.volume for s in midway_hit) if midway_hit else 0.0) > 1.0
+
+  r_slip = slip_clearance_radial_mm(cfg_petg)
+  # Worst-case lateral shift within guide rail clearance must still solidly engage the catch ledge.
+  worst_dy_midway = latch_solid.translate((-12.0, -r_slip + 0.01, 2.0))
+  worst_dy_hit = gauge_solid.intersect(worst_dy_midway)
+  assert (sum(s.volume for s in worst_dy_hit) if worst_dy_hit else 0.0) > 1.5
+
+  # Attempting to shift latch further -Y into deflection relief hits the solid guide channel wall.
+  lateral_stop = latch_solid.translate((-15.0, -(r_slip + 0.35), 2.0))
+  stop_hit = gauge_solid.intersect(lateral_stop)
+  assert (sum(s.volume for s in stop_hit) if stop_hit else 0.0) > 5.0
+
+  # Attempting to lift latch straight up (+Z) hits the 25.1-deg dovetail retention shoulders.
+  lift_z = latch_solid.translate((-15.0, 0.0, 3.5))
+  lift_hit = gauge_solid.intersect(lift_z)
+  assert (sum(s.volume for s in lift_hit) if lift_hit else 0.0) > 5.0
 
   # Verify filament-specific adaptation (PLA vs TPU_95A).
   coupon_pla = generate_tolerance_coupon(PrintKitConfig(filament="PLA"))
