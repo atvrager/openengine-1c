@@ -20,9 +20,21 @@ MAX_KIT_SCALE: float = 2.0
 DEFAULT_KIT_SCALE: float = 0.5
 DEFAULT_NOZZLE_DIAMETER_MM: float = 0.4
 DEFAULT_LAYER_HEIGHT_MM: float = 0.2
-DEFAULT_BED_DIMS_MM: tuple[float, float, float] = (256.0, 256.0, 256.0)
+DEFAULT_PRINT_VOLUME_MM: tuple[float, float, float] = (250.0, 220.0, 270.0)
 DEFAULT_INFILL_PCT: float = 20.0
 DEFAULT_WALL_LOOPS: int = 3
+DEFAULT_TOP_BOTTOM_LAYERS: int = 4
+DEFAULT_VOLUMETRIC_FLOW_MM3_S: float = 8.0
+DEFAULT_SUPPORT_MASS_OVERHEAD_PCT: float = 15.0
+DEFAULT_BRIM_WIDTH_MM: float = 5.0
+MESH_QUALITY_PRESETS: dict[str, tuple[float, float]] = {
+    "draft": (0.05, 0.20),
+    "standard": (0.02, 0.08),
+    "fine": (0.01, 0.05),
+    "ultra": (0.005, 0.03),
+}
+VALID_MESH_QUALITIES: tuple[str, ...] = tuple(MESH_QUALITY_PRESETS.keys())
+DEFAULT_MESH_QUALITY: str = "ultra"
 VALID_PLATE_GROUP_MODES: tuple[str, ...] = ("fewest", "slicer", "category")
 DEFAULT_PLATE_GROUP_MODE: str = "fewest"
 DEFAULT_PLATE_MARGIN_MM: float = 8.0
@@ -30,6 +42,18 @@ DEFAULT_PLATE_GAP_MM: float = 6.0
 DEFAULT_BRIM_PLATE_GAP_MM: float = 12.0
 MIN_PLATE_MARGIN_MM: float = 0.0
 MIN_PLATE_GAP_MM: float = 0.5
+MAX_SUPPORT_MASS_OVERHEAD_PCT: float = 200.0
+MAX_BRIM_WIDTH_MM: float = 25.0
+
+
+def resolve_mesh_deflections(mesh_quality: str) -> tuple[float, float]:
+  """Return ``(linear_deflection_mm, angular_deflection_rad)`` for a named mesh quality preset."""
+  key = str(mesh_quality).strip().lower()
+  if key not in MESH_QUALITY_PRESETS:
+    raise ValueError(
+        f"mesh_quality must be one of {VALID_MESH_QUALITIES}, got {mesh_quality!r}"
+    )
+  return MESH_QUALITY_PRESETS[key]
 
 MIN_NOZZLE_DIAMETER_MM: float = 0.15
 MAX_NOZZLE_DIAMETER_MM: float = 1.2
@@ -82,15 +106,21 @@ class PrintKitConfig:
     filament: Filament profile name or alias (defaults to ``"PETG"``).
     nozzle_diameter_mm: Extruder nozzle orifice diameter in mm.
     layer_height_mm: Slicer layer height in mm.
-    printer_bed_mm: Build volume ``(X, Y, Z)`` in mm.
+    print_volume_mm: Printer build volume ``(X, Y, Z)`` in mm (default ``250x220x270``).
     cutaway: Whether to generate sectioned display cutaway housings.
     infill_pct: Target slicer infill percentage in [0.0, 100.0].
     wall_loops: Perimeter wall loop count (>= 1).
+    top_bottom_layers: Solid top and bottom shell layer count (>= 1).
+    volumetric_flow_mm3_s: Effective average volumetric extrusion flow in mm^3/s (> 0).
+    support_mass_overhead_pct: Extra filament mass overhead percentage for tree supports (half for buildplate-only).
+    brim_width_mm: Outer brim width in mm applied when a part needs a brim (>= 0).
+    mesh_quality: STL tessellation smoothness preset (``"draft"``, ``"standard"``, ``"fine"``, ``"ultra"``).
+    compensate_shrinkage: Whether to bake thermal shrinkage compensation into exported STLs.
     clearance_bias_mm: Additive user calibration offset (positive loosens fits).
     include_coupon: Whether to include the filament tolerance calibration coupon.
     pack_plates: Whether to pack kit parts into merged build-plate meta-STLs.
     plate_group_mode: Plate grouping strategy (``"fewest"``, ``"slicer"``, ``"category"``).
-    plate_margin_mm: Minimum bed-edge clearance margin in mm on packed plates.
+    plate_margin_mm: Minimum print-volume edge clearance margin in mm on packed plates.
     plate_gap_mm: Minimum inter-part XY spacing in mm on non-brim packed plates.
   """
 
@@ -98,10 +128,16 @@ class PrintKitConfig:
   filament: str = DEFAULT_FILAMENT_NAME
   nozzle_diameter_mm: float = DEFAULT_NOZZLE_DIAMETER_MM
   layer_height_mm: float = DEFAULT_LAYER_HEIGHT_MM
-  printer_bed_mm: tuple[float, float, float] = DEFAULT_BED_DIMS_MM
+  print_volume_mm: tuple[float, float, float] = DEFAULT_PRINT_VOLUME_MM
   cutaway: bool = False
   infill_pct: float = DEFAULT_INFILL_PCT
   wall_loops: int = DEFAULT_WALL_LOOPS
+  top_bottom_layers: int = DEFAULT_TOP_BOTTOM_LAYERS
+  volumetric_flow_mm3_s: float = DEFAULT_VOLUMETRIC_FLOW_MM3_S
+  support_mass_overhead_pct: float = DEFAULT_SUPPORT_MASS_OVERHEAD_PCT
+  brim_width_mm: float = DEFAULT_BRIM_WIDTH_MM
+  mesh_quality: str = DEFAULT_MESH_QUALITY
+  compensate_shrinkage: bool = True
   clearance_bias_mm: float = 0.0
   include_coupon: bool = True
   pack_plates: bool = True
@@ -133,9 +169,9 @@ class PrintKitConfig:
           f"{self.nozzle_diameter_mm}], got {self.layer_height_mm}"
       )
 
-    if len(self.printer_bed_mm) != 3 or any(dim <= 0.0 for dim in self.printer_bed_mm):
-      raise ValueError(f"printer_bed_mm must have 3 positive dimensions, got {self.printer_bed_mm}")
-    self.printer_bed_mm = tuple(float(dim) for dim in self.printer_bed_mm)  # type: ignore[assignment]
+    if len(self.print_volume_mm) != 3 or any(dim <= 0.0 for dim in self.print_volume_mm):
+      raise ValueError(f"print_volume_mm must have 3 positive dimensions, got {self.print_volume_mm}")
+    self.print_volume_mm = tuple(float(dim) for dim in self.print_volume_mm)  # type: ignore[assignment]
 
     self.infill_pct = float(self.infill_pct)
     if not (0.0 <= self.infill_pct <= 100.0):
@@ -143,6 +179,33 @@ class PrintKitConfig:
 
     if self.wall_loops < 1:
       raise ValueError(f"wall_loops must be >= 1, got {self.wall_loops}")
+
+    if self.top_bottom_layers < 1:
+      raise ValueError(f"top_bottom_layers must be >= 1, got {self.top_bottom_layers}")
+
+    self.volumetric_flow_mm3_s = float(self.volumetric_flow_mm3_s)
+    if self.volumetric_flow_mm3_s <= 0.0:
+      raise ValueError(
+          f"volumetric_flow_mm3_s must be > 0, got {self.volumetric_flow_mm3_s}"
+      )
+
+    self.support_mass_overhead_pct = float(self.support_mass_overhead_pct)
+    if not (0.0 <= self.support_mass_overhead_pct <= MAX_SUPPORT_MASS_OVERHEAD_PCT):
+      raise ValueError(
+          f"support_mass_overhead_pct must be in [0.0, {MAX_SUPPORT_MASS_OVERHEAD_PCT}], "
+          f"got {self.support_mass_overhead_pct}"
+      )
+
+    self.brim_width_mm = float(self.brim_width_mm)
+    if not (0.0 <= self.brim_width_mm <= MAX_BRIM_WIDTH_MM):
+      raise ValueError(
+          f"brim_width_mm must be in [0.0, {MAX_BRIM_WIDTH_MM}], got {self.brim_width_mm}"
+      )
+
+    self.mesh_quality = str(self.mesh_quality).strip().lower()
+    _ = resolve_mesh_deflections(self.mesh_quality)
+
+    self.compensate_shrinkage = bool(self.compensate_shrinkage)
     self.clearance_bias_mm = float(self.clearance_bias_mm)
     self.pack_plates = bool(self.pack_plates)
 
@@ -168,6 +231,11 @@ class PrintKitConfig:
   def filament_profile(self) -> FilamentProfile:
     """Resolve the active ``FilamentProfile`` for ``self.filament``."""
     return get_filament_profile(self.filament)
+
+  @property
+  def mesh_deflections(self) -> tuple[float, float]:
+    """Return ``(linear_deflection_mm, angular_deflection_rad)`` for ``self.mesh_quality``."""
+    return resolve_mesh_deflections(self.mesh_quality)
 
 
 @dataclass(frozen=True, slots=True)

@@ -130,9 +130,9 @@ def test_end_to_end_workflow_petg_and_pla_comparison(tmp_path: Path) -> None:
   assert summary_petg.plate_packing is not None
   assert summary_petg.plate_packing.total_placed_pieces == 42
   assert summary_petg.plate_packing.all_watertight is True
-  assert summary_petg.plate_packing.all_fit_bed is True
+  assert summary_petg.plate_packing.all_fit_print_volume is True
   assert summary_petg.total_print_time_min > 0.0
-  assert summary_petg.bed_fits_all is True
+  assert summary_petg.all_fit_print_volume is True
   assert summary_petg.all_watertight is True
   assert summary_petg.static_collisions == ()
   assert summary_petg.kinematic_collisions == ()
@@ -145,7 +145,7 @@ def test_end_to_end_workflow_petg_and_pla_comparison(tmp_path: Path) -> None:
   for rep in list(summary_petg.parts_reports) + [summary_petg.coupon_report]:
     assert rep.stl_path.is_file()
     assert rep.watertight is True
-    assert rep.fits_bed is True
+    assert rep.fits_print_volume is True
     assert rep.triangle_count > 100
     tri_cnt, wt, *_ = _read_binary_stl_arrays(rep.stl_path)
     assert wt is True and tri_cnt == rep.triangle_count
@@ -166,8 +166,9 @@ def test_end_to_end_workflow_petg_and_pla_comparison(tmp_path: Path) -> None:
   manifest = json.loads(summary_petg.manifest_path.read_text(encoding="utf-8"))
   assert manifest["totals"]["total_unique_parts"] == 33
   assert manifest["totals"]["total_printed_pieces"] == 42
-  assert manifest["totals"]["bed_fits_all"] is True
+  assert manifest["totals"]["all_fit_print_volume"] is True
   assert manifest["totals"]["all_watertight"] is True
+  assert manifest["mesh_tessellation"]["quality"] == "ultra"
   assert manifest["verification"]["collisions_passed"] is True
   assert manifest["verification"]["fitment_all_passed"] is True
   assert manifest["verification"]["snap_all_safe"] is True
@@ -203,7 +204,7 @@ def test_end_to_end_workflow_petg_and_pla_comparison(tmp_path: Path) -> None:
       verify_kinematics=False,
   )
   assert summary_pla.all_watertight is True
-  assert summary_pla.bed_fits_all is True
+  assert summary_pla.all_fit_print_volume is True
   assert summary_pla.static_collisions == ()
   assert summary_pla.total_mass_g < summary_petg.total_mass_g
   assert (
@@ -219,7 +220,7 @@ def test_end_to_end_workflow_petg_and_pla_comparison(tmp_path: Path) -> None:
 
 
 def test_cli_print_kit_command(tmp_path: Path) -> None:
-  """Verify openengine print-kit CLI handles valid runs, bed-overflow warnings, and invalid configs."""
+  """Verify openengine print-kit CLI handles valid runs, print-volume overflow warnings, and invalid configs."""
   runner = CliRunner()
 
   # 1. Valid CLI execution
@@ -247,15 +248,15 @@ def test_cli_print_kit_command(tmp_path: Path) -> None:
   assert "Total Filament Mass by Type" in res_ok.output
   assert "Packed Build Plates" in res_ok.output
 
-  # 2. Tight bed overflow prints warning but still exits 0 (not collision/watertight/config failure)
-  tight_dir = tmp_path / "cli_tight_bed"
+  # 2. Tight print-volume overflow prints warning but still exits 0 (not collision/watertight/config failure)
+  tight_dir = tmp_path / "cli_tight_volume"
   res_tight = runner.invoke(
       app,
       [
           "print-kit",
           "--scale",
           "0.5",
-          "--bed",
+          "--print-volume",
           "60,60,60",
           "--skip-kinematics",
           "--no-coupon",
@@ -266,11 +267,15 @@ def test_cli_print_kit_command(tmp_path: Path) -> None:
   assert res_tight.exit_code == 0, res_tight.output
   assert "exceeded" in res_tight.output.lower()
 
-  # 3. Invalid filament / bed string exits non-zero cleanly
+  # 3. Invalid filament / print-volume / mesh-quality exits non-zero cleanly
   res_bad_fil = runner.invoke(app, ["print-kit", "--filament", "UNOBTAINIUM"])
   assert res_bad_fil.exit_code == 1
   assert "Invalid print-kit configuration" in res_bad_fil.output
 
-  res_bad_bed = runner.invoke(app, ["print-kit", "--bed", "256,256"])
-  assert res_bad_bed.exit_code == 1
-  assert "Invalid print-kit configuration" in res_bad_bed.output
+  res_bad_vol = runner.invoke(app, ["print-kit", "--print-volume", "250,220"])
+  assert res_bad_vol.exit_code == 1
+  assert "Invalid print-kit configuration" in res_bad_vol.output
+
+  res_bad_mesh = runner.invoke(app, ["print-kit", "--mesh-quality", "blocky"])
+  assert res_bad_mesh.exit_code == 1
+  assert "Invalid print-kit configuration" in res_bad_mesh.output

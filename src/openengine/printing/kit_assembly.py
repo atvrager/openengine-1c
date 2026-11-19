@@ -138,7 +138,7 @@ class PrintKitSummary:
   total_mass_g: float
   filament_mass_by_type_g: dict[str, float]
   total_print_time_min: float
-  bed_fits_all: bool
+  all_fit_print_volume: bool
   all_watertight: bool
   static_collisions: tuple[str, ...]
   kinematic_collisions: tuple[str, ...]
@@ -740,7 +740,7 @@ def _serialize_plate_report(plate: BuildPlateReport) -> dict[str, Any]:
   payload = asdict(plate)
   payload["stl_path"] = str(plate.stl_path)
   payload["used_dims_mm"] = list(plate.used_dims_mm)
-  payload["bed_dims_mm"] = list(plate.bed_dims_mm)
+  payload["print_volume_mm"] = list(plate.print_volume_mm)
   payload["warnings"] = list(plate.warnings)
   return payload
 
@@ -758,7 +758,7 @@ def _serialize_plate_packing(packing: PlatePackingResult) -> dict[str, Any]:
       "unplaced_parts": list(packing.unplaced_parts),
       "filament_mass_by_type_g": dict(packing.filament_mass_by_type_g),
       "all_watertight": packing.all_watertight,
-      "all_fit_bed": packing.all_fit_bed,
+      "all_fit_print_volume": packing.all_fit_print_volume,
       "plates": [_serialize_plate_report(plate) for plate in packing.plates],
   }
 
@@ -770,13 +770,22 @@ def _write_kit_manifest(
 ) -> Path:
   """Write structured ``print_kit_manifest.json`` summarizing config, BOM, and checks."""
   profile = summary.filament_profile
-  sx, sy, sz = shrinkage_compensation_xyz(profile)
   cfg = summary.config
+  sx, sy, sz = (
+      shrinkage_compensation_xyz(profile) if cfg.compensate_shrinkage else (1.0, 1.0, 1.0)
+  )
+  lin_defl, ang_defl = cfg.mesh_deflections
 
   manifest: dict[str, Any] = {
       "config": asdict(cfg),
       "filament_profile": asdict(profile),
+      "shrinkage_compensation_applied": cfg.compensate_shrinkage,
       "shrinkage_compensation_xyz": [sx, sy, sz],
+      "mesh_tessellation": {
+          "quality": cfg.mesh_quality,
+          "linear_deflection_mm": lin_defl,
+          "angular_deflection_rad": ang_defl,
+      },
       "tolerances_mm": {
           "running_clearance_radial_mm": running_clearance_radial_mm(cfg),
           "slip_clearance_radial_mm": slip_clearance_radial_mm(cfg),
@@ -800,7 +809,7 @@ def _write_kit_manifest(
           "packed_plate_count": (
               len(summary.plate_packing.plates) if summary.plate_packing is not None else 0
           ),
-          "bed_fits_all": summary.bed_fits_all,
+          "all_fit_print_volume": summary.all_fit_print_volume,
           "all_watertight": summary.all_watertight,
           "coupon_included": summary.coupon_report is not None,
       },
@@ -858,8 +867,8 @@ def run_print_kit_workflow(
     *,
     export_assembled_preview: bool = False,
     verify_kinematics: bool = True,
-    linear_deflection: float = DEFAULT_LINEAR_DEFLECTION_MM,
-    angular_deflection: float = DEFAULT_ANGULAR_DEFLECTION_RAD,
+    linear_deflection: Optional[float] = None,
+    angular_deflection: Optional[float] = None,
 ) -> PrintKitSummary:
   """Execute the end-to-end OpenEngine 3D-printable model kit build, audit, and export."""
   from openengine.printing.report import write_print_guide_markdown
@@ -869,7 +878,12 @@ def run_print_kit_workflow(
   stl_dir.mkdir(parents=True, exist_ok=True)
 
   profile = cfg.filament_profile
-  shrink_xyz = shrinkage_compensation_xyz(profile)
+  shrink_xyz = (
+      shrinkage_compensation_xyz(profile) if cfg.compensate_shrinkage else (1.0, 1.0, 1.0)
+  )
+  cfg_lin, cfg_ang = cfg.mesh_deflections
+  eff_lin_deflection = float(linear_deflection) if linear_deflection is not None else cfg_lin
+  eff_ang_deflection = float(angular_deflection) if angular_deflection is not None else cfg_ang
 
   # Build housings once and reuse across canonical BOM, CA=0 check, kinematics, and preview.
   housings_parts = build_kit_housings_parts(cfg)
@@ -908,7 +922,7 @@ def run_print_kit_workflow(
         part=kp.part,
         part_name=name,
         max_overhang_deg=profile.max_overhang_deg,
-        printer_bed_mm=cfg.printer_bed_mm,
+        print_volume_mm=cfg.print_volume_mm,
         preferred_rotation_xyz_deg=kp.preferred_rotation_xyz_deg,
     )
     orient_results[name] = oriented
@@ -922,8 +936,8 @@ def run_print_kit_workflow(
         stl_path=stl_path,
         cfg=cfg,
         quantity=kp.quantity,
-        linear_deflection=linear_deflection,
-        angular_deflection=angular_deflection,
+        linear_deflection=eff_lin_deflection,
+        angular_deflection=eff_ang_deflection,
         orient_first=False,
         compensate_shrinkage=False,
     )
@@ -941,8 +955,8 @@ def run_print_kit_workflow(
         stl_path=coupon_stl,
         cfg=cfg,
         quantity=1,
-        linear_deflection=linear_deflection,
-        angular_deflection=angular_deflection,
+        linear_deflection=eff_lin_deflection,
+        angular_deflection=eff_ang_deflection,
         orient_first=False,
         compensate_shrinkage=False,
     )
@@ -955,21 +969,23 @@ def run_print_kit_workflow(
     export_part_stl(
         preview_part,
         preview_stl_path,
-        linear_deflection=linear_deflection,
-        angular_deflection=angular_deflection,
+        linear_deflection=eff_lin_deflection,
+        angular_deflection=eff_ang_deflection,
     )
     assembled_preview_stl_path = preview_stl_path
 
   plate_packing: Optional[PlatePackingResult] = None
   if cfg.pack_plates:
+    brim_gap = max(cfg.plate_gap_mm, (2.0 * cfg.brim_width_mm) + 2.0)
     plate_packing = pack_print_kit_plates(
         parts_reports=parts_reports,
         output_dir=out_dir / "plates",
-        printer_bed_mm=cfg.printer_bed_mm,
+        print_volume_mm=cfg.print_volume_mm,
         part_categories={name: kp.category for name, kp in bom_parts.items()},
         group_mode=cfg.plate_group_mode,
         margin_mm=cfg.plate_margin_mm,
         gap_mm=cfg.plate_gap_mm,
+        brim_gap_mm=brim_gap,
     )
 
   all_reports = list(parts_reports) + ([coupon_report] if coupon_report is not None else [])
@@ -981,8 +997,8 @@ def run_print_kit_workflow(
       primary_filament=profile.name,
   )
   total_print_time_min = sum(r.estimated_print_time_min * r.quantity for r in parts_reports)
-  bed_fits_all = all(r.fits_bed for r in all_reports) and (
-      plate_packing.all_fit_bed if plate_packing is not None else True
+  all_fit_print_volume = all(r.fits_print_volume for r in all_reports) and (
+      plate_packing.all_fit_print_volume if plate_packing is not None else True
   )
   all_watertight = all(r.watertight for r in all_reports) and (
       plate_packing.all_watertight if plate_packing is not None else True
@@ -999,7 +1015,7 @@ def run_print_kit_workflow(
       total_mass_g=total_mass_g,
       filament_mass_by_type_g=filament_mass_by_type_g,
       total_print_time_min=total_print_time_min,
-      bed_fits_all=bed_fits_all,
+      all_fit_print_volume=all_fit_print_volume,
       all_watertight=all_watertight,
       static_collisions=verification.static_collisions,
       kinematic_collisions=kinematic_collisions,

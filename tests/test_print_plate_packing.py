@@ -91,14 +91,14 @@ def test_print_kit_config_plate_validation() -> None:
 def test_pack_quantity_expansion_z90_rotation_and_centered_watertight_stl(tmp_path: Path) -> None:
   """Verify quantity expansion, 90-deg Z-rotation, exact spacing, centering, and watertightness."""
   parts_dir = tmp_path / "parts"
-  # Two 110x40 bars + three 30x25 blocks easily fit on a 160x160 bed (usable 144x144).
+  # Two 110x40 bars + three 30x25 blocks easily fit in a 160x160 print volume (usable 144x144).
   rep_bar = _make_box_report(parts_dir, "long_bar", (110.0, 40.0, 12.0), quantity=2, brim_override=False)
   rep_blk = _make_box_report(parts_dir, "small_block", (30.0, 25.0, 10.0), quantity=3, brim_override=False)
 
   res = pack_print_kit_plates(
       parts_reports=[rep_bar, rep_blk],
       output_dir=tmp_path / "plates",
-      printer_bed_mm=(160.0, 160.0, 160.0),
+      print_volume_mm=(160.0, 160.0, 160.0),
       part_categories={"long_bar": "rotating", "small_block": "valvetrain"},
       group_mode="fewest",
       margin_mm=8.0,
@@ -107,7 +107,7 @@ def test_pack_quantity_expansion_z90_rotation_and_centered_watertight_stl(tmp_pa
 
   assert isinstance(res, PlatePackingResult)
   assert res.all_watertight is True
-  assert res.all_fit_bed is True
+  assert res.all_fit_print_volume is True
   assert res.unplaced_parts == ()
   assert res.total_placed_pieces == 5
   assert len(res.plates) == 1
@@ -198,7 +198,7 @@ def test_brim_gap_upgrade_and_grouping_modes_with_multi_filament_mass(tmp_path: 
   res_fewest = pack_print_kit_plates(
       parts_reports=reports,
       output_dir=tmp_path / "plates_fewest",
-      printer_bed_mm=(256.0, 256.0, 256.0),
+      print_volume_mm=(250.0, 220.0, 270.0),
       part_categories=categories,
       group_mode="fewest",
       margin_mm=8.0,
@@ -216,7 +216,7 @@ def test_brim_gap_upgrade_and_grouping_modes_with_multi_filament_mass(tmp_path: 
   res_slicer = pack_print_kit_plates(
       parts_reports=reports,
       output_dir=tmp_path / "plates_slicer",
-      printer_bed_mm=(256.0, 256.0, 256.0),
+      print_volume_mm=(250.0, 220.0, 270.0),
       part_categories=categories,
       group_mode="slicer",
       margin_mm=8.0,
@@ -236,7 +236,7 @@ def test_brim_gap_upgrade_and_grouping_modes_with_multi_filament_mass(tmp_path: 
   res_cat = pack_print_kit_plates(
       parts_reports=reports,
       output_dir=tmp_path / "plates_category",
-      printer_bed_mm=(256.0, 256.0, 256.0),
+      print_volume_mm=(250.0, 220.0, 270.0),
       part_categories=categories,
       group_mode="category",
       margin_mm=8.0,
@@ -248,12 +248,12 @@ def test_brim_gap_upgrade_and_grouping_modes_with_multi_filament_mass(tmp_path: 
     assert len({p.category for p in plate.placements}) == 1
 
 
-def test_margin_oversized_and_bed_overflow_handling(tmp_path: Path) -> None:
-  """Verify parts exceeding margin pack solo with warning, while bed-overflow parts report unplaced."""
+def test_margin_oversized_and_volume_overflow_handling(tmp_path: Path) -> None:
+  """Verify parts exceeding margin pack solo with warning, while print-volume overflow parts report unplaced."""
   parts_dir = tmp_path / "parts"
-  # On a 100x100x100 bed with 8 mm margin (usable 84x84):
-  # - 94x50 fits bed (solo, 3 mm margin) with warning
-  # - 120x40 exceeds physical bed -> unplaced
+  # In a 100x100x100 print volume with 8 mm margin (usable 84x84):
+  # - 94x50 fits print volume (solo, 3 mm margin) with warning
+  # - 120x40 exceeds physical print volume -> unplaced
   # - 30x30 fits normally
   rep_margin_over = _make_box_report(parts_dir, "wide_flange", (94.0, 50.0, 10.0), brim_override=False)
   rep_too_big = _make_box_report(parts_dir, "giant_case", (120.0, 40.0, 10.0), brim_override=False)
@@ -262,20 +262,20 @@ def test_margin_oversized_and_bed_overflow_handling(tmp_path: Path) -> None:
   res = pack_print_kit_plates(
       parts_reports=[rep_margin_over, rep_too_big, rep_normal],
       output_dir=tmp_path / "plates",
-      printer_bed_mm=(100.0, 100.0, 100.0),
+      print_volume_mm=(100.0, 100.0, 100.0),
       group_mode="fewest",
       margin_mm=8.0,
       gap_mm=6.0,
   )
 
   assert res.unplaced_parts == ("giant_case",)
-  assert res.all_fit_bed is False
+  assert res.all_fit_print_volume is False
   assert res.all_watertight is True
   assert res.total_placed_pieces == 2
   assert len(res.plates) == 2
 
   solo_plate = next(p for p in res.plates if p.placements[0].part_name == "wide_flange")
-  assert solo_plate.fits_bed is True
+  assert solo_plate.fits_print_volume is True
   assert solo_plate.effective_margin_mm == pytest.approx(3.0, abs=0.1)
   assert any("margin" in w.lower() for w in solo_plate.warnings)
 
@@ -292,7 +292,7 @@ def test_real_kit_plate_packing_modes_and_cli_flags(tmp_path: Path) -> None:
   assert pp.total_placed_pieces == 42
   assert pp.unplaced_parts == ()
   assert pp.all_watertight is True
-  assert pp.all_fit_bed is True
+  assert pp.all_fit_print_volume is True
   assert 1 <= len(pp.plates) <= 6
 
   # Coupon stays excluded from packed build plates.
@@ -322,14 +322,14 @@ def test_real_kit_plate_packing_modes_and_cli_flags(tmp_path: Path) -> None:
   res_slicer = pack_print_kit_plates(
       parts_reports=summary.parts_reports,
       output_dir=tmp_path / "real_slicer_plates",
-      printer_bed_mm=cfg.printer_bed_mm,
+      print_volume_mm=cfg.print_volume_mm,
       part_categories=part_categories,
       group_mode="slicer",
   )
   res_cat = pack_print_kit_plates(
       parts_reports=summary.parts_reports,
       output_dir=tmp_path / "real_category_plates",
-      printer_bed_mm=cfg.printer_bed_mm,
+      print_volume_mm=cfg.print_volume_mm,
       part_categories=part_categories,
       group_mode="category",
   )

@@ -237,7 +237,7 @@ def test_stl_export_watertightness_and_printability(tmp_path: Path) -> None:
         preferred_rotation_xyz_deg=kp.preferred_rotation_xyz_deg,
     )
     assert rep.watertight is True, f"{name} STL not watertight"
-    assert rep.fits_bed is True, f"{name} exceeds bed: {rep.oriented_dims_mm}"
+    assert rep.fits_print_volume is True, f"{name} exceeds print volume: {rep.oriented_dims_mm}"
     assert rep.triangle_count > 100
     assert rep.overhang_pct < 5.0, f"{name} overhang too high: {rep.overhang_pct:.2f}%"
     assert rep.estimated_mass_g > 0.0

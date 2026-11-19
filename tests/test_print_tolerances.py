@@ -119,8 +119,15 @@ def test_print_kit_config_validation_and_scale_invariance() -> None:
   assert cfg_default.filament == "PETG"
   assert cfg_default.nozzle_diameter_mm == 0.4
   assert cfg_default.layer_height_mm == 0.2
-  assert cfg_default.printer_bed_mm == (256.0, 256.0, 256.0)
+  assert cfg_default.print_volume_mm == (250.0, 220.0, 270.0)
   assert cfg_default.wall_loops == 3
+  assert cfg_default.top_bottom_layers == 4
+  assert cfg_default.volumetric_flow_mm3_s == 8.0
+  assert cfg_default.support_mass_overhead_pct == 15.0
+  assert cfg_default.brim_width_mm == 5.0
+  assert cfg_default.mesh_quality == "ultra"
+  assert cfg_default.mesh_deflections == (0.005, 0.03)
+  assert cfg_default.compensate_shrinkage is True
   assert cfg_default.include_coupon is True
 
   with pytest.raises(ValueError):
@@ -131,6 +138,16 @@ def test_print_kit_config_validation_and_scale_invariance() -> None:
     PrintKitConfig(layer_height_mm=0.5, nozzle_diameter_mm=0.4)
   with pytest.raises(ValueError):
     PrintKitConfig(wall_loops=0)
+  with pytest.raises(ValueError):
+    PrintKitConfig(top_bottom_layers=0)
+  with pytest.raises(ValueError):
+    PrintKitConfig(volumetric_flow_mm3_s=0.0)
+  with pytest.raises(ValueError):
+    PrintKitConfig(support_mass_overhead_pct=-5.0)
+  with pytest.raises(ValueError):
+    PrintKitConfig(brim_width_mm=-1.0)
+  with pytest.raises(ValueError):
+    PrintKitConfig(mesh_quality="potato")
   with pytest.raises(KeyError):
     PrintKitConfig(filament="UNKNOWN")
 

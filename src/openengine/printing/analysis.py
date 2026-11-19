@@ -12,9 +12,9 @@ import numpy as np
 
 from openengine.printing.materials import DEFAULT_FILAMENT_NAME
 from openengine.printing.orientation import (
-    BED_FIT_EPS_MM,
     DEFAULT_MAX_OVERHANG_DEG,
-    DEFAULT_PRINTER_BED_MM,
+    DEFAULT_PRINT_VOLUME_MM,
+    VOLUME_FIT_EPS_MM,
     apply_shrinkage_compensation,
     compute_mesh_print_metrics,
     orient_part_for_printing,
@@ -28,18 +28,25 @@ STL_COUNT_BYTES: int = 4
 STL_PREFIX_BYTES: int = STL_HEADER_BYTES + STL_COUNT_BYTES
 STL_TRIANGLE_BYTES: int = 50
 MM3_PER_CM3: float = 1000.0
+SECONDS_PER_MINUTE: float = 60.0
 PCT_DIVISOR: float = 100.0
 HALF_FACTOR: float = 0.5
 THIRD_FACTOR: float = 1.0 / 3.0
 TET_VOLUME_DIVISOR: float = 6.0
+HORIZ_NORMAL_Z_THRESHOLD: float = 0.7071067811865475
 
-DEFAULT_LINEAR_DEFLECTION_MM: float = 0.05
-DEFAULT_ANGULAR_DEFLECTION_RAD: float = 0.2
+DEFAULT_LINEAR_DEFLECTION_MM: float = 0.005
+DEFAULT_ANGULAR_DEFLECTION_RAD: float = 0.03
 DEFAULT_DENSITY_G_CM3: float = 1.27
 DEFAULT_INFILL_PCT: float = 20.0
 DEFAULT_WALL_LOOPS: int = 3
+DEFAULT_TOP_BOTTOM_LAYERS: int = 4
 DEFAULT_NOZZLE_DIAM_MM: float = 0.4
 DEFAULT_LAYER_HEIGHT_MM: float = 0.2
+DEFAULT_VOLUMETRIC_FLOW_MM3_S: float = 8.0
+DEFAULT_SUPPORT_MASS_OVERHEAD_PCT: float = 15.0
+DEFAULT_BRIM_WIDTH_MM: float = 5.0
+BUILDPLATE_SUPPORT_OVERHEAD_FRAC: float = 0.5
 
 MIN_OVERHANG_AREA_MM2: float = 2.0
 MIN_OVERHANG_PCT: float = 0.5
@@ -58,12 +65,11 @@ SPARSE_CONTACT_FOOTPRINT_FRAC: float = 0.10
 SPARSE_CONTACT_MIN_HEIGHT_MM: float = 20.0
 MIN_BASE_DIM_MM: float = 0.1
 
-BASE_VOLUMETRIC_FLOW_CM3_MIN: float = 0.18
 MIN_FLOW_CM3_MIN: float = 0.03
-LAYER_OVERHEAD_MIN: float = 0.05
+LAYER_OVERHEAD_MIN: float = 0.04
 PRINT_SETUP_OVERHEAD_MIN: float = 1.0
-BUILDPLATE_SUPPORT_TIME_MULT: float = 1.15
-TREE_SUPPORT_TIME_MULT: float = 1.25
+BUILDPLATE_SUPPORT_TIME_MULT: float = 1.08
+TREE_SUPPORT_TIME_MULT: float = 1.12
 
 BINARY_STL_DTYPE: np.dtype = np.dtype([
     ("normal", "<f4", (3,)),
@@ -82,7 +88,7 @@ class PartPrintReport:
   stl_path: Path
   quantity: int
   oriented_dims_mm: Tuple[float, float, float]
-  fits_bed: bool
+  fits_print_volume: bool
   contact_area_mm2: float
   overhang_area_mm2: float
   overhang_pct: float
@@ -301,24 +307,53 @@ def _recommend_brim(
   return False
 
 
+def _split_horizontal_and_side_area_mm2(
+    v0: np.ndarray,
+    v1: np.ndarray,
+    v2: np.ndarray,
+) -> Tuple[float, float]:
+  """Partition mesh surface area into horizontal (top/bottom) and vertical/sloped wall areas."""
+  if v0.size == 0:
+    return 0.0, 0.0
+  cross = np.cross(v1 - v0, v2 - v0)
+  twice_area = np.linalg.norm(cross, axis=1)
+  valid = twice_area > MIN_TRI_TWICE_AREA_MM2
+  if not np.any(valid):
+    return 0.0, 0.0
+  areas = HALF_FACTOR * twice_area[valid]
+  abs_nz = np.abs(cross[valid, 2] / twice_area[valid])
+  horiz_mask = abs_nz >= HORIZ_NORMAL_Z_THRESHOLD
+  horiz_area = float(np.sum(areas[horiz_mask]))
+  side_area = float(np.sum(areas[~horiz_mask]))
+  return horiz_area, side_area
+
+
 def _resolve_process_settings(
     cfg: Optional["PrintKitConfig"],
     max_overhang_deg: Optional[float],
-    printer_bed_mm: Optional[Tuple[float, float, float]],
+    print_volume_mm: Optional[Tuple[float, float, float]],
     density_g_cm3: Optional[float],
     infill_pct: Optional[float],
     wall_loops: Optional[int],
+    top_bottom_layers: Optional[int],
     nozzle_diameter_mm: Optional[float],
     layer_height_mm: Optional[float],
-) -> Tuple[float, Tuple[float, float, float], float, float, int, float, float]:
+    volumetric_flow_mm3_s: Optional[float],
+    support_mass_overhead_pct: Optional[float],
+    brim_width_mm: Optional[float],
+) -> Tuple[float, Tuple[float, float, float], float, float, int, int, float, float, float, float, float]:
   """Resolve filament and printer parameters from optional PrintKitConfig and overrides."""
   resolved_oh = DEFAULT_MAX_OVERHANG_DEG
-  resolved_bed = DEFAULT_PRINTER_BED_MM
+  resolved_vol = DEFAULT_PRINT_VOLUME_MM
   resolved_density = DEFAULT_DENSITY_G_CM3
   resolved_infill = DEFAULT_INFILL_PCT
   resolved_walls = DEFAULT_WALL_LOOPS
+  resolved_tb_layers = DEFAULT_TOP_BOTTOM_LAYERS
   resolved_nozzle = DEFAULT_NOZZLE_DIAM_MM
   resolved_layer = DEFAULT_LAYER_HEIGHT_MM
+  resolved_flow = DEFAULT_VOLUMETRIC_FLOW_MM3_S
+  resolved_sup_pct = DEFAULT_SUPPORT_MASS_OVERHEAD_PCT
+  resolved_brim_w = DEFAULT_BRIM_WIDTH_MM
 
   if cfg is not None:
     from openengine.printing.materials import get_filament_profile
@@ -326,20 +361,28 @@ def _resolve_process_settings(
     profile = get_filament_profile(cfg.filament)
     resolved_oh = float(profile.max_overhang_deg)
     resolved_density = float(profile.density_g_cm3)
-    resolved_bed = tuple(float(v) for v in cfg.printer_bed_mm)  # type: ignore[assignment]
+    resolved_vol = tuple(float(v) for v in cfg.print_volume_mm)  # type: ignore[assignment]
     resolved_infill = float(cfg.infill_pct)
     resolved_walls = int(cfg.wall_loops)
+    resolved_tb_layers = int(cfg.top_bottom_layers)
     resolved_nozzle = float(cfg.nozzle_diameter_mm)
     resolved_layer = float(cfg.layer_height_mm)
+    resolved_flow = float(cfg.volumetric_flow_mm3_s)
+    resolved_sup_pct = float(cfg.support_mass_overhead_pct)
+    resolved_brim_w = float(cfg.brim_width_mm)
 
   return (
       float(max_overhang_deg) if max_overhang_deg is not None else resolved_oh,
-      tuple(float(v) for v in printer_bed_mm) if printer_bed_mm is not None else resolved_bed,  # type: ignore[return-value]
+      tuple(float(v) for v in print_volume_mm) if print_volume_mm is not None else resolved_vol,  # type: ignore[return-value]
       float(density_g_cm3) if density_g_cm3 is not None else resolved_density,
       float(infill_pct) if infill_pct is not None else resolved_infill,
       int(wall_loops) if wall_loops is not None else resolved_walls,
+      int(top_bottom_layers) if top_bottom_layers is not None else resolved_tb_layers,
       float(nozzle_diameter_mm) if nozzle_diameter_mm is not None else resolved_nozzle,
       float(layer_height_mm) if layer_height_mm is not None else resolved_layer,
+      float(volumetric_flow_mm3_s) if volumetric_flow_mm3_s is not None else resolved_flow,
+      float(support_mass_overhead_pct) if support_mass_overhead_pct is not None else resolved_sup_pct,
+      float(brim_width_mm) if brim_width_mm is not None else resolved_brim_w,
   )
 
 
@@ -351,14 +394,18 @@ def analyze_part_printability(
     quantity: int = 1,
     *,
     max_overhang_deg: Optional[float] = None,
-    printer_bed_mm: Optional[Tuple[float, float, float]] = None,
+    print_volume_mm: Optional[Tuple[float, float, float]] = None,
     density_g_cm3: Optional[float] = None,
     infill_pct: Optional[float] = None,
     wall_loops: Optional[int] = None,
+    top_bottom_layers: Optional[int] = None,
     nozzle_diameter_mm: Optional[float] = None,
     layer_height_mm: Optional[float] = None,
-    linear_deflection: float = DEFAULT_LINEAR_DEFLECTION_MM,
-    angular_deflection: float = DEFAULT_ANGULAR_DEFLECTION_RAD,
+    volumetric_flow_mm3_s: Optional[float] = None,
+    support_mass_overhead_pct: Optional[float] = None,
+    brim_width_mm: Optional[float] = None,
+    linear_deflection: Optional[float] = None,
+    angular_deflection: Optional[float] = None,
     orient_first: bool = False,
     preferred_rotation_xyz_deg: Optional[Tuple[float, float, float]] = None,
     compensate_shrinkage: bool = False,
@@ -372,22 +419,42 @@ def analyze_part_printability(
   )
   (
       eff_oh_deg,
-      eff_bed_mm,
+      eff_vol_mm,
       eff_density,
       eff_infill_pct,
       eff_wall_loops,
+      eff_tb_layers,
       eff_nozzle_mm,
       eff_layer_mm,
+      eff_flow_mm3_s,
+      eff_sup_overhead_pct,
+      eff_brim_width_mm,
   ) = _resolve_process_settings(
       cfg=cfg,
       max_overhang_deg=max_overhang_deg,
-      printer_bed_mm=printer_bed_mm,
+      print_volume_mm=print_volume_mm,
       density_g_cm3=density_g_cm3,
       infill_pct=infill_pct,
       wall_loops=wall_loops,
+      top_bottom_layers=top_bottom_layers,
       nozzle_diameter_mm=nozzle_diameter_mm,
       layer_height_mm=layer_height_mm,
+      volumetric_flow_mm3_s=volumetric_flow_mm3_s,
+      support_mass_overhead_pct=support_mass_overhead_pct,
+      brim_width_mm=brim_width_mm,
   )
+
+  if linear_deflection is None or angular_deflection is None:
+    cfg_lin, cfg_ang = (
+        cfg.mesh_deflections
+        if cfg is not None
+        else (DEFAULT_LINEAR_DEFLECTION_MM, DEFAULT_ANGULAR_DEFLECTION_RAD)
+    )
+    eff_lin_deflection = float(linear_deflection) if linear_deflection is not None else cfg_lin
+    eff_ang_deflection = float(angular_deflection) if angular_deflection is not None else cfg_ang
+  else:
+    eff_lin_deflection = float(linear_deflection)
+    eff_ang_deflection = float(angular_deflection)
 
   target_part = part
   if orient_first:
@@ -395,7 +462,7 @@ def analyze_part_printability(
         part=part,
         part_name=part_name,
         max_overhang_deg=eff_oh_deg,
-        printer_bed_mm=eff_bed_mm,
+        print_volume_mm=eff_vol_mm,
         preferred_rotation_xyz_deg=preferred_rotation_xyz_deg,
     ).oriented_part
 
@@ -414,8 +481,8 @@ def analyze_part_printability(
       _, tri_count, watertight = export_part_stl(
           target_part,
           tmp_stl,
-          linear_deflection=linear_deflection,
-          angular_deflection=angular_deflection,
+          linear_deflection=eff_lin_deflection,
+          angular_deflection=eff_ang_deflection,
       )
       _, _, v0, v1, v2, signed_vol_mm3 = _read_binary_stl_arrays(tmp_stl)
     report_stl_path = Path(f"{part_name}.stl")
@@ -423,17 +490,17 @@ def analyze_part_printability(
     report_stl_path, tri_count, watertight = export_part_stl(
         target_part,
         Path(stl_path),
-        linear_deflection=linear_deflection,
-        angular_deflection=angular_deflection,
+        linear_deflection=eff_lin_deflection,
+        angular_deflection=eff_ang_deflection,
     )
     _, _, v0, v1, v2, signed_vol_mm3 = _read_binary_stl_arrays(report_stl_path)
 
   bbox = target_part.bounding_box()
   oriented_dims_mm = (float(bbox.size.X), float(bbox.size.Y), float(bbox.size.Z))
-  fits_bed = (
-      oriented_dims_mm[0] <= eff_bed_mm[0] + BED_FIT_EPS_MM
-      and oriented_dims_mm[1] <= eff_bed_mm[1] + BED_FIT_EPS_MM
-      and oriented_dims_mm[2] <= eff_bed_mm[2] + BED_FIT_EPS_MM
+  fits_print_volume = (
+      oriented_dims_mm[0] <= eff_vol_mm[0] + VOLUME_FIT_EPS_MM
+      and oriented_dims_mm[1] <= eff_vol_mm[1] + VOLUME_FIT_EPS_MM
+      and oriented_dims_mm[2] <= eff_vol_mm[2] + VOLUME_FIT_EPS_MM
   )
 
   metrics = compute_mesh_print_metrics(v0, v1, v2, max_overhang_deg=eff_oh_deg)
@@ -449,17 +516,49 @@ def analyze_part_printability(
 
   vol_cm3 = (nominal_brep_vol_mm3 if nominal_brep_vol_mm3 > 0.0 else max(0.0, signed_vol_mm3)) / MM3_PER_CM3
 
-  shell_thickness_mm = max(eff_wall_loops, 1) * max(eff_nozzle_mm, 0.1)
-  shell_vol_cm3 = min(vol_cm3, (metrics.total_area_mm2 * shell_thickness_mm) / MM3_PER_CM3)
+  horiz_area_mm2, side_area_mm2 = _split_horizontal_and_side_area_mm2(v0, v1, v2)
+  wall_thickness_mm = max(eff_wall_loops, 1) * max(eff_nozzle_mm, 0.1)
+  tb_thickness_mm = max(eff_tb_layers, 1) * max(eff_layer_mm, 0.04)
+  shell_vol_cm3 = min(
+      vol_cm3,
+      ((side_area_mm2 * wall_thickness_mm) + (horiz_area_mm2 * tb_thickness_mm)) / MM3_PER_CM3,
+  )
   core_vol_cm3 = max(0.0, vol_cm3 - shell_vol_cm3)
   infill_frac = max(0.0, min(1.0, eff_infill_pct / PCT_DIVISOR))
-  effective_filament_cm3 = shell_vol_cm3 + (core_vol_cm3 * infill_frac)
+  part_filament_cm3 = shell_vol_cm3 + (core_vol_cm3 * infill_frac)
+
+  if support_rec == "tree_supports":
+    support_vol_cm3 = part_filament_cm3 * (eff_sup_overhead_pct / PCT_DIVISOR)
+  elif support_rec == "buildplate_only":
+    support_vol_cm3 = part_filament_cm3 * (
+        BUILDPLATE_SUPPORT_OVERHEAD_FRAC * eff_sup_overhead_pct / PCT_DIVISOR
+    )
+  else:
+    support_vol_cm3 = 0.0
+
+  if brim_rec and eff_brim_width_mm > 0.0:
+    dx_mm, dy_mm, _ = oriented_dims_mm
+    brim_perim_mm = min(
+        2.0 * (dx_mm + dy_mm),
+        4.0 * math.sqrt(max(metrics.contact_area_mm2, 0.25 * dx_mm * dy_mm)),
+    )
+    brim_vol_cm3 = (brim_perim_mm * eff_brim_width_mm * max(eff_layer_mm, 0.04)) / MM3_PER_CM3
+  else:
+    brim_vol_cm3 = 0.0
+
+  effective_filament_cm3 = part_filament_cm3 + support_vol_cm3 + brim_vol_cm3
   estimated_mass_g = effective_filament_cm3 * eff_density
 
-  flow_scale = (eff_layer_mm / DEFAULT_LAYER_HEIGHT_MM) * (eff_nozzle_mm / DEFAULT_NOZZLE_DIAM_MM)
-  eff_flow_cm3_min = max(MIN_FLOW_CM3_MIN, BASE_VOLUMETRIC_FLOW_CM3_MIN * flow_scale)
+  eff_flow_cm3_min = max(
+      MIN_FLOW_CM3_MIN,
+      (eff_flow_mm3_s * SECONDS_PER_MINUTE) / MM3_PER_CM3,
+  )
   num_layers = oriented_dims_mm[2] / max(eff_layer_mm, 0.05)
-  base_time_min = PRINT_SETUP_OVERHEAD_MIN + (effective_filament_cm3 / eff_flow_cm3_min) + (num_layers * LAYER_OVERHEAD_MIN)
+  base_time_min = (
+      PRINT_SETUP_OVERHEAD_MIN
+      + (effective_filament_cm3 / eff_flow_cm3_min)
+      + (num_layers * LAYER_OVERHEAD_MIN)
+  )
   if support_rec == "tree_supports":
     base_time_min *= TREE_SUPPORT_TIME_MULT
   elif support_rec == "buildplate_only":
@@ -470,10 +569,10 @@ def analyze_part_printability(
     warnings_list.append("STL export produced zero triangles")
   if not watertight:
     warnings_list.append("STL mesh is not closed-manifold watertight")
-  if not fits_bed:
+  if not fits_print_volume:
     warnings_list.append(
         f"Oriented dimensions ({oriented_dims_mm[0]:.1f}x{oriented_dims_mm[1]:.1f}x{oriented_dims_mm[2]:.1f} mm) "
-        f"exceed printer bed ({eff_bed_mm[0]:.1f}x{eff_bed_mm[1]:.1f}x{eff_bed_mm[2]:.1f} mm)"
+        f"exceed print volume ({eff_vol_mm[0]:.1f}x{eff_vol_mm[1]:.1f}x{eff_vol_mm[2]:.1f} mm)"
     )
   if brim_rec:
     warnings_list.append(
@@ -495,7 +594,7 @@ def analyze_part_printability(
       stl_path=report_stl_path,
       quantity=int(quantity),
       oriented_dims_mm=oriented_dims_mm,
-      fits_bed=fits_bed,
+      fits_print_volume=fits_print_volume,
       contact_area_mm2=metrics.contact_area_mm2,
       overhang_area_mm2=metrics.overhang_area_mm2,
       overhang_pct=metrics.overhang_pct,

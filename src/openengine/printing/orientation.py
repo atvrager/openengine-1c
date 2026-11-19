@@ -15,15 +15,15 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
 
 DEFAULT_MAX_OVERHANG_DEG: float = 45.0
-DEFAULT_PRINTER_BED_MM: Tuple[float, float, float] = (256.0, 256.0, 256.0)
+DEFAULT_PRINT_VOLUME_MM: Tuple[float, float, float] = (250.0, 220.0, 270.0)
 
-BED_CONTACT_Z_TOL_MM: float = 0.05
+PLATE_CONTACT_Z_TOL_MM: float = 0.05
 BUILDPLATE_IGNORE_Z_TOL_MM: float = 0.2
 CONTACT_NORMAL_Z_THRESHOLD: float = -0.95
 OVERHANG_SIN_MARGIN: float = 1.0e-3
 MIN_TRIANGLE_TWICE_AREA_MM2: float = 1.0e-12
 MIN_VOLUME_MM3: float = 1.0e-6
-BED_FIT_EPS_MM: float = 1.0e-5
+VOLUME_FIT_EPS_MM: float = 1.0e-5
 TET_CENTROID_FACTOR: float = 0.25
 PCT_SCALE: float = 100.0
 HALF_FACTOR: float = 0.5
@@ -34,7 +34,7 @@ DIAGONAL_Z_ROT_DEG: float = 45.0
 EVAL_LINEAR_DEFLECTION_MM: float = 0.05
 EVAL_ANGULAR_DEFLECTION_RAD: float = 0.2
 
-BED_OVERFLOW_PENALTY: float = 1.0e9
+VOLUME_OVERFLOW_PENALTY: float = 1.0e9
 OVERHANG_AREA_WEIGHT: float = 3.0
 CONTACT_AREA_WEIGHT: float = 1.5
 LOW_CONTACT_FRACTION_THRESHOLD: float = 1.0e-3
@@ -63,7 +63,7 @@ class OrientedPartResult:
   oriented_part: Part
   rotation_xyz_deg: Tuple[float, float, float]
   translation_xyz_mm: Tuple[float, float, float]
-  bed_dims_xyz_mm: Tuple[float, float, float]
+  oriented_dims_xyz_mm: Tuple[float, float, float]
   contact_area_mm2: float
   overhang_area_mm2: float
   overhang_pct: float
@@ -223,7 +223,7 @@ def compute_mesh_print_metrics(
   min_z = float(min(np.min(v0_v[:, 2]), np.min(v1_v[:, 2]), np.min(v2_v[:, 2])))
   tri_max_z = np.maximum(np.maximum(v0_v[:, 2], v1_v[:, 2]), v2_v[:, 2]) - min_z
 
-  contact_mask = (tri_max_z <= BED_CONTACT_Z_TOL_MM) & (nz <= CONTACT_NORMAL_Z_THRESHOLD)
+  contact_mask = (tri_max_z <= PLATE_CONTACT_Z_TOL_MM) & (nz <= CONTACT_NORMAL_Z_THRESHOLD)
   contact_area = float(np.sum(areas[contact_mask]))
 
   clamped_deg = max(0.0, min(89.99, float(max_overhang_deg)))
@@ -264,30 +264,30 @@ def _bbox_dims_tuple(bbox: BoundBox) -> Tuple[float, float, float]:
   return (float(size.X), float(size.Y), float(size.Z))
 
 
-def _fits_bed_dims(
+def _fits_print_volume_dims(
     dims_xyz: Tuple[float, float, float],
-    printer_bed_mm: Tuple[float, float, float],
+    print_volume_mm: Tuple[float, float, float],
 ) -> bool:
-  """Return True if (dx, dy, dz) fits within printer_bed_mm with numeric epsilon."""
+  """Return True if (dx, dy, dz) fits within print_volume_mm with numeric epsilon."""
   return (
-      dims_xyz[0] <= printer_bed_mm[0] + BED_FIT_EPS_MM
-      and dims_xyz[1] <= printer_bed_mm[1] + BED_FIT_EPS_MM
-      and dims_xyz[2] <= printer_bed_mm[2] + BED_FIT_EPS_MM
+      dims_xyz[0] <= print_volume_mm[0] + VOLUME_FIT_EPS_MM
+      and dims_xyz[1] <= print_volume_mm[1] + VOLUME_FIT_EPS_MM
+      and dims_xyz[2] <= print_volume_mm[2] + VOLUME_FIT_EPS_MM
   )
 
 
 def _score_orientation_candidate(
     metrics: MeshPrintMetrics,
     dims_xyz: Tuple[float, float, float],
-    printer_bed_mm: Tuple[float, float, float],
+    print_volume_mm: Tuple[float, float, float],
     rotation_xyz_deg: Tuple[float, float, float],
     extra_z_penalty: float = 0.0,
 ) -> float:
-  """Compute minimization cost balancing bed fit, overhangs, contact area, and stability."""
+  """Compute minimization cost balancing print-volume fit, overhangs, contact area, and stability."""
   dx, dy, dz = dims_xyz
-  bx, by, bz = printer_bed_mm
-  overflow = max(0.0, dx - bx) + max(0.0, dy - by) + max(0.0, dz - bz)
-  bed_penalty = BED_OVERFLOW_PENALTY * (overflow + 1.0) if overflow > BED_FIT_EPS_MM else 0.0
+  vx, vy, vz = print_volume_mm
+  overflow = max(0.0, dx - vx) + max(0.0, dy - vy) + max(0.0, dz - vz)
+  volume_penalty = VOLUME_OVERFLOW_PENALTY * (overflow + 1.0) if overflow > VOLUME_FIT_EPS_MM else 0.0
 
   total_area = max(metrics.total_area_mm2, 1.0e-6)
   no_contact_penalty = (
@@ -304,7 +304,7 @@ def _score_orientation_candidate(
   rot_tiebreak = ROTATION_TIEBREAK_WEIGHT * sum(abs(a) for a in rotation_xyz_deg)
 
   return (
-      bed_penalty
+      volume_penalty
       + (OVERHANG_AREA_WEIGHT * metrics.overhang_area_mm2)
       - (CONTACT_AREA_WEIGHT * metrics.contact_area_mm2)
       + no_contact_penalty
@@ -319,17 +319,17 @@ def _format_rationale(
     rotation_xyz_deg: Tuple[float, float, float],
     dims_xyz: Tuple[float, float, float],
     metrics: MeshPrintMetrics,
-    fits_bed: bool,
+    fits_print_volume: bool,
     is_preferred: bool,
-    rotated_z_for_bed: bool,
+    rotated_z_for_volume: bool,
 ) -> str:
   """Generate a concise human-readable explanation of the chosen orientation."""
   prefix = "Preferred orientation" if is_preferred else "Selected orientation"
-  bed_note = "fits bed" if fits_bed else "EXCEEDS bed"
-  z_note = " (rotated +90 deg Z for XY bed fit)" if rotated_z_for_bed else ""
+  vol_note = "fits print volume" if fits_print_volume else "EXCEEDS print volume"
+  z_note = " (rotated +90 deg Z for XY print-volume fit)" if rotated_z_for_volume else ""
   return (
       f"{prefix} for {part_name}: rot={rotation_xyz_deg} deg{z_note}, "
-      f"dims=({dims_xyz[0]:.1f}x{dims_xyz[1]:.1f}x{dims_xyz[2]:.1f}) mm ({bed_note}), "
+      f"dims=({dims_xyz[0]:.1f}x{dims_xyz[1]:.1f}x{dims_xyz[2]:.1f}) mm ({vol_note}), "
       f"contact={metrics.contact_area_mm2:.1f} mm^2, "
       f"overhang={metrics.overhang_area_mm2:.1f} mm^2 ({metrics.overhang_pct:.1f}%)"
   )
@@ -342,9 +342,9 @@ def _evaluate_candidate_list(
     v2: np.ndarray,
     candidates: Sequence[Tuple[Tuple[float, float, float], float]],
     max_overhang_deg: float,
-    printer_bed_mm: Tuple[float, float, float],
+    print_volume_mm: Tuple[float, float, float],
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], MeshPrintMetrics, bool, float]:
-  """Evaluate rotation candidates and return (best_rot, best_dims, best_metrics, fits_bed, best_score)."""
+  """Evaluate rotation candidates and return (best_rot, best_dims, best_metrics, fits_vol, best_score)."""
   best_score = math.inf
   best_rot = candidates[0][0]
   best_dims = (0.0, 0.0, 0.0)
@@ -366,7 +366,7 @@ def _evaluate_candidate_list(
         bbox_cache[base_key] = _bbox_dims_tuple(rotated_part.bounding_box())
 
     dims_xyz = bbox_cache[base_key]
-    fits_bed = _fits_bed_dims(dims_xyz, printer_bed_mm)
+    fits_vol = _fits_print_volume_dims(dims_xyz, print_volume_mm)
 
     rot_mat = _rotation_matrix_extrinsic_xyz(rot_deg)
     v0_r = v0 @ rot_mat.T
@@ -377,7 +377,7 @@ def _evaluate_candidate_list(
     score = _score_orientation_candidate(
         metrics=metrics,
         dims_xyz=dims_xyz,
-        printer_bed_mm=printer_bed_mm,
+        print_volume_mm=print_volume_mm,
         rotation_xyz_deg=rot_deg,
         extra_z_penalty=extra_penalty,
     )
@@ -386,7 +386,7 @@ def _evaluate_candidate_list(
       best_rot = rot_deg
       best_dims = dims_xyz
       best_metrics = metrics
-      best_fits = fits_bed
+      best_fits = fits_vol
 
   return best_rot, best_dims, best_metrics, best_fits, best_score
 
@@ -395,7 +395,7 @@ def orient_part_for_printing(
     part: Part,
     part_name: str,
     max_overhang_deg: float = DEFAULT_MAX_OVERHANG_DEG,
-    printer_bed_mm: Tuple[float, float, float] = DEFAULT_PRINTER_BED_MM,
+    print_volume_mm: Tuple[float, float, float] = DEFAULT_PRINT_VOLUME_MM,
     preferred_rotation_xyz_deg: Optional[Tuple[float, float, float]] = None,
 ) -> OrientedPartResult:
   """Orient a Part onto the Z=0 build plate, centered in XY, with baked B-Rep geometry."""
@@ -408,45 +408,45 @@ def orient_part_for_printing(
     rx, ry, rz = (float(a) for a in preferred_rotation_xyz_deg)
     pref_rot = (rx, ry, rz)
     pref_z90 = (rx, ry, rz + RIGHT_ANGLE_DEG)
-    best_rot, _, _, fits_bed, _ = _evaluate_candidate_list(
+    best_rot, _, _, fits_vol, _ = _evaluate_candidate_list(
         part=part,
         v0=v0,
         v1=v1,
         v2=v2,
         candidates=((pref_rot, 0.0), (pref_z90, Z_ROTATION_PENALTY)),
         max_overhang_deg=max_overhang_deg,
-        printer_bed_mm=printer_bed_mm,
+        print_volume_mm=print_volume_mm,
     )
     is_preferred = True
-    rotated_z_for_bed = best_rot == pref_z90
+    rotated_z_for_volume = best_rot == pref_z90
   else:
     base_candidates = [(rot, 0.0) for rot in ORTHOGONAL_BASE_ROTATIONS_DEG]
     z90_candidates = [((rx, ry, RIGHT_ANGLE_DEG), Z_ROTATION_PENALTY) for rx, ry, _ in ORTHOGONAL_BASE_ROTATIONS_DEG]
-    best_rot, _, _, fits_bed, _ = _evaluate_candidate_list(
+    best_rot, _, _, fits_vol, _ = _evaluate_candidate_list(
         part=part,
         v0=v0,
         v1=v1,
         v2=v2,
         candidates=base_candidates + z90_candidates,
         max_overhang_deg=max_overhang_deg,
-        printer_bed_mm=printer_bed_mm,
+        print_volume_mm=print_volume_mm,
     )
-    if not fits_bed:
+    if not fits_vol:
       diag_candidates = [
           ((rx, ry, DIAGONAL_Z_ROT_DEG), DIAGONAL_ROTATION_PENALTY)
           for rx, ry, _ in ORTHOGONAL_BASE_ROTATIONS_DEG
       ]
-      best_rot, _, _, fits_bed, _ = _evaluate_candidate_list(
+      best_rot, _, _, fits_vol, _ = _evaluate_candidate_list(
           part=part,
           v0=v0,
           v1=v1,
           v2=v2,
           candidates=base_candidates + z90_candidates + diag_candidates,
           max_overhang_deg=max_overhang_deg,
-          printer_bed_mm=printer_bed_mm,
+          print_volume_mm=print_volume_mm,
       )
     is_preferred = False
-    rotated_z_for_bed = math.isclose(best_rot[2], RIGHT_ANGLE_DEG, abs_tol=1.0e-6)
+    rotated_z_for_volume = math.isclose(best_rot[2], RIGHT_ANGLE_DEG, abs_tol=1.0e-6)
 
   rotated_only = bake_part_transform(part, best_rot)
   bb_rot = rotated_only.bounding_box()
@@ -457,8 +457,8 @@ def orient_part_for_printing(
 
   oriented_part = bake_part_transform(part, best_rot, translation_xyz_mm)
   bb_final = oriented_part.bounding_box()
-  bed_dims_xyz_mm = _bbox_dims_tuple(bb_final)
-  fits_final = _fits_bed_dims(bed_dims_xyz_mm, printer_bed_mm)
+  oriented_dims_xyz_mm = _bbox_dims_tuple(bb_final)
+  fits_final = _fits_print_volume_dims(oriented_dims_xyz_mm, print_volume_mm)
 
   vf0, vf1, vf2 = extract_part_triangles(oriented_part)
   final_metrics = compute_mesh_print_metrics(vf0, vf1, vf2, max_overhang_deg=max_overhang_deg)
@@ -466,11 +466,11 @@ def orient_part_for_printing(
   rationale = _format_rationale(
       part_name=part_name,
       rotation_xyz_deg=best_rot,
-      dims_xyz=bed_dims_xyz_mm,
+      dims_xyz=oriented_dims_xyz_mm,
       metrics=final_metrics,
-      fits_bed=fits_final,
+      fits_print_volume=fits_final,
       is_preferred=is_preferred,
-      rotated_z_for_bed=rotated_z_for_bed,
+      rotated_z_for_volume=rotated_z_for_volume,
   )
 
   return OrientedPartResult(
@@ -478,7 +478,7 @@ def orient_part_for_printing(
       oriented_part=oriented_part,
       rotation_xyz_deg=best_rot,
       translation_xyz_mm=translation_xyz_mm,
-      bed_dims_xyz_mm=bed_dims_xyz_mm,
+      oriented_dims_xyz_mm=oriented_dims_xyz_mm,
       contact_area_mm2=final_metrics.contact_area_mm2,
       overhang_area_mm2=final_metrics.overhang_area_mm2,
       overhang_pct=final_metrics.overhang_pct,

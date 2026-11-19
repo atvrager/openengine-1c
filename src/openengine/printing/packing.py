@@ -24,7 +24,7 @@ from openengine.printing.analysis import (
     STL_TRIANGLE_BYTES,
     _read_binary_stl_arrays,
 )
-from openengine.printing.orientation import BED_FIT_EPS_MM
+from openengine.printing.orientation import VOLUME_FIT_EPS_MM
 from openengine.printing.tolerances import (
     DEFAULT_BRIM_PLATE_GAP_MM,
     DEFAULT_PLATE_GAP_MM,
@@ -69,8 +69,8 @@ class PlatePlacement:
   instance_index: int
   category: str
   rotated_z_90: bool
-  bed_min_x_mm: float
-  bed_min_y_mm: float
+  plate_min_x_mm: float
+  plate_min_y_mm: float
   placed_dims_mm: tuple[float, float, float]
   support_recommendation: str
   brim_recommended: bool
@@ -91,11 +91,11 @@ class BuildPlateReport:
   piece_count: int
   unique_part_count: int
   used_dims_mm: tuple[float, float, float]
-  bed_dims_mm: tuple[float, float, float]
+  print_volume_mm: tuple[float, float, float]
   effective_margin_mm: float
   effective_gap_mm: float
-  bed_utilization_pct: float
-  fits_bed: bool
+  plate_utilization_pct: float
+  fits_print_volume: bool
   support_recommendation: str
   brim_recommended: bool
   estimated_mass_g: float
@@ -120,7 +120,7 @@ class PlatePackingResult:
   total_placed_pieces: int
   filament_mass_by_type_g: dict[str, float]
   all_watertight: bool
-  all_fit_bed: bool
+  all_fit_print_volume: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,7 +153,7 @@ class _PackItem:
 
 @dataclass(frozen=True, slots=True)
 class _PlacedEntry:
-  """Intermediate placement in usable-area coordinates before bed centering."""
+  """Intermediate placement in usable-area coordinates before plate centering."""
 
   item: _PackItem
   rect_x: float
@@ -199,8 +199,8 @@ class _MaxRectsBin:
         if padded_w > free.w + RECT_FIT_EPS_MM or padded_h > free.h + RECT_FIT_EPS_MM:
           continue
         if (
-            free.x + placed_dx > self.usable_x + BED_FIT_EPS_MM
-            or free.y + placed_dy > self.usable_y + BED_FIT_EPS_MM
+            free.x + placed_dx > self.usable_x + VOLUME_FIT_EPS_MM
+            or free.y + placed_dy > self.usable_y + VOLUME_FIT_EPS_MM
         ):
           continue
 
@@ -329,19 +329,19 @@ def _load_binary_stl_mesh(stl_path: Path) -> _LoadedStlMesh:
   return _LoadedStlMesh(records=records, dims_xyz_mm=dims)
 
 
-def _fits_physical_bed(
+def _fits_print_volume(
     dx: float,
     dy: float,
     dz: float,
-    bed_dims: tuple[float, float, float],
+    print_volume_mm: tuple[float, float, float],
 ) -> tuple[bool, bool]:
-  """Return ``(fits_bed, requires_z90_rotation)`` against physical bed dimensions."""
-  bx, by, bz = bed_dims
-  if dz > bz + BED_FIT_EPS_MM:
+  """Return ``(fits_print_volume, requires_z90_rotation)`` against physical print volume."""
+  vx, vy, vz = print_volume_mm
+  if dz > vz + VOLUME_FIT_EPS_MM:
     return False, False
-  if dx <= bx + BED_FIT_EPS_MM and dy <= by + BED_FIT_EPS_MM:
+  if dx <= vx + VOLUME_FIT_EPS_MM and dy <= vy + VOLUME_FIT_EPS_MM:
     return True, False
-  if dy <= bx + BED_FIT_EPS_MM and dx <= by + BED_FIT_EPS_MM:
+  if dy <= vx + VOLUME_FIT_EPS_MM and dx <= vy + VOLUME_FIT_EPS_MM:
     return True, True
   return False, False
 
@@ -351,8 +351,8 @@ def _fits_usable_xy(dx: float, dy: float, usable_x: float, usable_y: float) -> b
   if usable_x <= 0.0 or usable_y <= 0.0:
     return False
   return (
-      (dx <= usable_x + BED_FIT_EPS_MM and dy <= usable_y + BED_FIT_EPS_MM)
-      or (dy <= usable_x + BED_FIT_EPS_MM and dx <= usable_y + BED_FIT_EPS_MM)
+      (dx <= usable_x + VOLUME_FIT_EPS_MM and dy <= usable_y + VOLUME_FIT_EPS_MM)
+      or (dy <= usable_x + VOLUME_FIT_EPS_MM and dx <= usable_y + VOLUME_FIT_EPS_MM)
   )
 
 
@@ -377,15 +377,15 @@ def _try_repack_all(
 
 def _pack_group_items(
     items: Sequence[_PackItem],
-    bed_dims: tuple[float, float, float],
+    print_volume_mm: tuple[float, float, float],
     margin_mm: float,
     gap_mm: float,
     brim_gap_mm: float,
 ) -> tuple[list[_OpenPlate], list[str]]:
   """Pack one logical group of items into one or more build plates."""
-  bx, by, _ = bed_dims
-  usable_x = bx - (2.0 * margin_mm)
-  usable_y = by - (2.0 * margin_mm)
+  vx, vy, _ = print_volume_mm
+  usable_x = vx - (2.0 * margin_mm)
+  usable_y = vy - (2.0 * margin_mm)
 
   open_plates: list[_OpenPlate] = []
   oversized_single_plates: list[_OpenPlate] = []
@@ -393,7 +393,7 @@ def _pack_group_items(
   packable: list[_PackItem] = []
 
   for item in sorted(items, key=_item_sort_key):
-    fits_phys, needs_rot90 = _fits_physical_bed(item.dx_mm, item.dy_mm, item.dz_mm, bed_dims)
+    fits_phys, needs_rot90 = _fits_print_volume(item.dx_mm, item.dy_mm, item.dz_mm, print_volume_mm)
     if not fits_phys:
       unplaced.append(item.part_name)
       continue
@@ -401,7 +401,7 @@ def _pack_group_items(
     if not _fits_usable_xy(item.dx_mm, item.dy_mm, usable_x, usable_y):
       placed_dx = item.dy_mm if needs_rot90 else item.dx_mm
       placed_dy = item.dx_mm if needs_rot90 else item.dy_mm
-      solo_bin = _MaxRectsBin(usable_x=bx, usable_y=by, gap_mm=0.0)
+      solo_bin = _MaxRectsBin(usable_x=vx, usable_y=vy, gap_mm=0.0)
       solo_bin.entries.append(
           _PlacedEntry(
               item=item,
@@ -412,7 +412,7 @@ def _pack_group_items(
               rotated_z_90=needs_rot90,
           )
       )
-      actual_margin = min(HALF_FACTOR * (bx - placed_dx), HALF_FACTOR * (by - placed_dy))
+      actual_margin = min(HALF_FACTOR * (vx - placed_dx), HALF_FACTOR * (vy - placed_dy))
       eff_gap = brim_gap_mm if item.brim_recommended else gap_mm
       oversized_single_plates.append(
           _OpenPlate(
@@ -470,33 +470,33 @@ def _pack_group_items(
 
 def _verify_plate_placements(
     placements: Sequence[PlatePlacement],
-    bed_dims: tuple[float, float, float],
+    print_volume_mm: tuple[float, float, float],
     effective_gap_mm: float,
 ) -> None:
-  """Assert zero XY overlap, minimum gap separation, and bed containment for a plate."""
-  bx, by, bz = bed_dims
+  """Assert zero XY overlap, minimum gap separation, and print-volume containment for a plate."""
+  vx, vy, vz = print_volume_mm
   for pl in placements:
     px, py, pz = pl.placed_dims_mm
     if (
-        pl.bed_min_x_mm < -BED_FIT_EPS_MM
-        or pl.bed_min_y_mm < -BED_FIT_EPS_MM
-        or pl.bed_min_x_mm + px > bx + BED_FIT_EPS_MM
-        or pl.bed_min_y_mm + py > by + BED_FIT_EPS_MM
-        or pz > bz + BED_FIT_EPS_MM
+        pl.plate_min_x_mm < -VOLUME_FIT_EPS_MM
+        or pl.plate_min_y_mm < -VOLUME_FIT_EPS_MM
+        or pl.plate_min_x_mm + px > vx + VOLUME_FIT_EPS_MM
+        or pl.plate_min_y_mm + py > vy + VOLUME_FIT_EPS_MM
+        or pz > vz + VOLUME_FIT_EPS_MM
     ):
       raise RuntimeError(
-          f"Packed part '{pl.part_name}' exceeds bed bounds {bed_dims} at "
-          f"({pl.bed_min_x_mm:.2f}, {pl.bed_min_y_mm:.2f}) with dims {pl.placed_dims_mm}"
+          f"Packed part '{pl.part_name}' exceeds print volume bounds {print_volume_mm} at "
+          f"({pl.plate_min_x_mm:.2f}, {pl.plate_min_y_mm:.2f}) with dims {pl.placed_dims_mm}"
       )
 
   count = len(placements)
   for i in range(count):
     a = placements[i]
-    ax1, ay1 = a.bed_min_x_mm, a.bed_min_y_mm
+    ax1, ay1 = a.plate_min_x_mm, a.plate_min_y_mm
     ax2, ay2 = ax1 + a.placed_dims_mm[0], ay1 + a.placed_dims_mm[1]
     for j in range(i + 1, count):
       b = placements[j]
-      bx1, by1 = b.bed_min_x_mm, b.bed_min_y_mm
+      bx1, by1 = b.plate_min_x_mm, b.plate_min_y_mm
       bx2, by2 = bx1 + b.placed_dims_mm[0], by1 + b.placed_dims_mm[1]
       sep_x = max(ax1 - bx2, bx1 - ax2)
       sep_y = max(ay1 - by2, by1 - ay2)
@@ -636,7 +636,7 @@ def _build_item_groups(
 def pack_print_kit_plates(
     parts_reports: Sequence[PartPrintReport],
     output_dir: Path | str,
-    printer_bed_mm: tuple[float, float, float],
+    print_volume_mm: tuple[float, float, float],
     *,
     part_categories: Optional[Mapping[str, str]] = None,
     group_mode: str = DEFAULT_PLATE_GROUP_MODE,
@@ -649,10 +649,10 @@ def pack_print_kit_plates(
   Args:
     parts_reports: Per-part printability reports with already-exported binary STL paths.
     output_dir: Directory where merged ``plate_*.stl`` files will be written.
-    printer_bed_mm: Printer build volume ``(X, Y, Z)`` in mm.
+    print_volume_mm: Printer build volume ``(X, Y, Z)`` in mm.
     part_categories: Optional mapping from ``part_name`` to subsystem category.
     group_mode: Grouping strategy: ``"fewest"``, ``"slicer"``, or ``"category"``.
-    margin_mm: Minimum clearance from printer bed edges in mm.
+    margin_mm: Minimum clearance from print-volume XY edges in mm.
     gap_mm: Minimum XY gap between neighboring parts on standard plates in mm.
     brim_gap_mm: Minimum XY gap on plates containing brim-recommended parts
       (defaults to ``max(gap_mm, 12.0)`` mm).
@@ -664,8 +664,8 @@ def pack_print_kit_plates(
     raise ValueError(
         f"group_mode must be one of {VALID_PLATE_GROUP_MODES}, got {group_mode!r}"
     )
-  if len(printer_bed_mm) != 3 or any(float(d) <= 0.0 for d in printer_bed_mm):
-    raise ValueError(f"printer_bed_mm must contain 3 positive dimensions, got {printer_bed_mm}")
+  if len(print_volume_mm) != 3 or any(float(d) <= 0.0 for d in print_volume_mm):
+    raise ValueError(f"print_volume_mm must contain 3 positive dimensions, got {print_volume_mm}")
   margin_val = float(margin_mm)
   gap_val = float(gap_mm)
   if margin_val < MIN_PLATE_MARGIN_MM:
@@ -679,9 +679,9 @@ def pack_print_kit_plates(
       else max(gap_val, float(brim_gap_mm))
   )
 
-  bed_dims = (float(printer_bed_mm[0]), float(printer_bed_mm[1]), float(printer_bed_mm[2]))
-  bx, by, _ = bed_dims
-  bed_area_mm2 = bx * by
+  vol_dims = (float(print_volume_mm[0]), float(print_volume_mm[1]), float(print_volume_mm[2]))
+  vx, vy, _ = vol_dims
+  plate_area_mm2 = vx * vy
   plates_dir = Path(output_dir)
   plates_dir.mkdir(parents=True, exist_ok=True)
   categories = part_categories or {}
@@ -727,7 +727,7 @@ def pack_print_kit_plates(
   for group_label, group_slug, group_items in groups:
     packed_plates, group_unplaced = _pack_group_items(
         items=group_items,
-        bed_dims=bed_dims,
+        print_volume_mm=vol_dims,
         margin_mm=margin_val,
         gap_mm=gap_val,
         brim_gap_mm=effective_brim_gap,
@@ -757,8 +757,8 @@ def pack_print_kit_plates(
 
       stl_shift_x = -(occ_min_x + (HALF_FACTOR * used_x))
       stl_shift_y = -(occ_min_y + (HALF_FACTOR * used_y))
-      bed_origin_x = (HALF_FACTOR * bx) + stl_shift_x
-      bed_origin_y = (HALF_FACTOR * by) + stl_shift_y
+      plate_origin_x = (HALF_FACTOR * vx) + stl_shift_x
+      plate_origin_y = (HALF_FACTOR * vy) + stl_shift_y
 
       placements = tuple(
           PlatePlacement(
@@ -766,8 +766,8 @@ def pack_print_kit_plates(
               instance_index=e.item.instance_index,
               category=e.item.category,
               rotated_z_90=e.rotated_z_90,
-              bed_min_x_mm=round(e.rect_x + bed_origin_x, 3),
-              bed_min_y_mm=round(e.rect_y + bed_origin_y, 3),
+              plate_min_x_mm=round(e.rect_x + plate_origin_x, 3),
+              plate_min_y_mm=round(e.rect_y + plate_origin_y, 3),
               placed_dims_mm=(
                   round(e.placed_dx, 3),
                   round(e.placed_dy, 3),
@@ -784,7 +784,7 @@ def pack_print_kit_plates(
 
       _verify_plate_placements(
           placements=placements,
-          bed_dims=bed_dims,
+          print_volume_mm=vol_dims,
           effective_gap_mm=open_plate.effective_gap_mm if len(placements) > 1 else 0.0,
       )
 
@@ -798,12 +798,12 @@ def pack_print_kit_plates(
       )
 
       part_footprint_area = sum(e.placed_dx * e.placed_dy for e in entries)
-      bed_util_pct = (part_footprint_area / bed_area_mm2) * PCT_SCALE if bed_area_mm2 > 0.0 else 0.0
+      plate_util_pct = (part_footprint_area / plate_area_mm2) * PCT_SCALE if plate_area_mm2 > 0.0 else 0.0
       actual_margin_mm = max(
           0.0,
           min(
-              HALF_FACTOR * (bx - used_x),
-              HALF_FACTOR * (by - used_y),
+              HALF_FACTOR * (vx - used_x),
+              HALF_FACTOR * (vy - used_y),
           ),
       )
 
@@ -846,14 +846,14 @@ def pack_print_kit_plates(
               piece_count=len(placements),
               unique_part_count=len({p.part_name for p in placements}),
               used_dims_mm=(round(used_x, 3), round(used_y, 3), round(used_z, 3)),
-              bed_dims_mm=bed_dims,
+              print_volume_mm=vol_dims,
               effective_margin_mm=round(actual_margin_mm, 3),
               effective_gap_mm=round(open_plate.effective_gap_mm, 3),
-              bed_utilization_pct=round(bed_util_pct, 2),
-              fits_bed=(
-                  used_x <= bx + BED_FIT_EPS_MM
-                  and used_y <= by + BED_FIT_EPS_MM
-                  and used_z <= bed_dims[2] + BED_FIT_EPS_MM
+              plate_utilization_pct=round(plate_util_pct, 2),
+              fits_print_volume=(
+                  used_x <= vx + VOLUME_FIT_EPS_MM
+                  and used_y <= vy + VOLUME_FIT_EPS_MM
+                  and used_z <= vol_dims[2] + VOLUME_FIT_EPS_MM
               ),
               support_recommendation=plate_support,
               brim_recommended=plate_brim,
@@ -876,7 +876,7 @@ def pack_print_kit_plates(
       fil: round(placed_filament_totals[fil], 3) for fil in sorted(placed_filament_totals.keys())
   }
   all_watertight = all(p.watertight for p in plate_reports)
-  all_fit_bed = (not unique_unplaced) and all(p.fits_bed for p in plate_reports)
+  all_fit_print_volume = (not unique_unplaced) and all(p.fits_print_volume for p in plate_reports)
 
   return PlatePackingResult(
       group_mode=group_mode,
@@ -889,5 +889,5 @@ def pack_print_kit_plates(
       total_placed_pieces=total_placed,
       filament_mass_by_type_g=total_filament_mass_by_type,
       all_watertight=all_watertight,
-      all_fit_bed=all_fit_bed,
+      all_fit_print_volume=all_fit_print_volume,
   )

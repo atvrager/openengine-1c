@@ -218,8 +218,8 @@ def test_cross_module_clearances_rotating_and_valvetrain(scale: float) -> None:
     assert hits_hv == [], f"Housings vs valvetrain collision at scale={scale}, CA={ca}: {hits_hv} (max={max_hv})"
 
 
-def test_stl_export_watertight_and_bed_fit_05x(tmp_path: Path) -> None:
-  """Verify all 11 housing STLs at 0.5x are closed-manifold watertight and fit 256x256x256 bed."""
+def test_stl_export_watertight_and_volume_fit_05x(tmp_path: Path) -> None:
+  """Verify all 11 housing STLs at 0.5x are closed-manifold watertight and fit 250x220x270 volume."""
   cfg = PrintKitConfig(scale=0.5, cutaway=False)
   parts = build_kit_housings_parts(cfg)
 
@@ -234,5 +234,5 @@ def test_stl_export_watertight_and_bed_fit_05x(tmp_path: Path) -> None:
         preferred_rotation_xyz_deg=kp.preferred_rotation_xyz_deg,
     )
     assert rep.watertight is True, f"{name} STL is not watertight"
-    assert rep.fits_bed is True, f"{name} exceeds printer bed: {rep.oriented_dims_mm}"
+    assert rep.fits_print_volume is True, f"{name} exceeds print volume: {rep.oriented_dims_mm}"
     assert rep.triangle_count > 100, f"{name} has too few triangles: {rep.triangle_count}"

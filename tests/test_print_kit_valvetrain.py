@@ -215,8 +215,8 @@ def test_valve_kinematic_displacements_at_peak_lifts() -> None:
   assert ret_dz_in == pytest.approx(dz_in_actual, abs=0.08)
 
 
-def test_all_valvetrain_parts_stl_watertight_and_bed_printable(tmp_path: Path) -> None:
-  """Verify every BOM KitPart exports to a closed-manifold watertight STL fitting the build plate."""
+def test_all_valvetrain_parts_stl_watertight_and_volume_printable(tmp_path: Path) -> None:
+  """Verify every BOM KitPart exports to a closed-manifold watertight STL fitting the print volume."""
   cfg = PrintKitConfig(scale=0.5, filament="PETG")
   bom = build_kit_valvetrain_parts(cfg, crank_angle_deg=0.0)
 
@@ -243,7 +243,7 @@ def test_all_valvetrain_parts_stl_watertight_and_bed_printable(tmp_path: Path) -
         preferred_rotation_xyz_deg=kp.preferred_rotation_xyz_deg,
     )
     assert rep.watertight is True, f"{name} STL not watertight: {rep.warnings}"
-    assert rep.fits_bed is True, f"{name} exceeds bed: {rep.oriented_dims_mm}"
+    assert rep.fits_print_volume is True, f"{name} exceeds print volume: {rep.oriented_dims_mm}"
     assert rep.triangle_count > 100
     assert rep.contact_area_mm2 > 0.0
     if name in no_support_parts:

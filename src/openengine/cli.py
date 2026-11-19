@@ -1754,14 +1754,16 @@ def run_all(
   rich.print("[bold green]====================================================================[/bold green]")
 
 
-def _parse_bed_dims_mm(bed: str) -> tuple[float, float, float]:
-  """Parse a comma-separated ``X,Y,Z`` build-volume string in millimeters."""
-  raw_parts = [chunk.strip() for chunk in bed.split(",") if chunk.strip()]
+def _parse_print_volume_mm(print_volume: str) -> tuple[float, float, float]:
+  """Parse a comma-separated ``X,Y,Z`` print-volume string in millimeters."""
+  raw_parts = [chunk.strip() for chunk in print_volume.split(",") if chunk.strip()]
   if len(raw_parts) != 3:
-    raise ValueError(f"--bed must have 3 comma-separated dimensions 'X,Y,Z', got {bed!r}")
+    raise ValueError(
+        f"--print-volume must have 3 comma-separated dimensions 'X,Y,Z', got {print_volume!r}"
+    )
   dims = tuple(float(val) for val in raw_parts)
   if any(dim <= 0.0 for dim in dims):
-    raise ValueError(f"--bed dimensions must all be > 0, got {dims}")
+    raise ValueError(f"--print-volume dimensions must all be > 0, got {dims}")
   return dims  # type: ignore[return-value]
 
 
@@ -1771,10 +1773,44 @@ def print_kit(
     filament: str = typer.Option("PETG", "--filament", help="Filament profile (PETG, PLA, PLA+, PETG_CF, ASA, ABS, TPU_95A)"),
     nozzle: float = typer.Option(0.4, "--nozzle", help="Extruder nozzle diameter in mm"),
     layer_height: float = typer.Option(0.2, "--layer-height", help="Slicer layer height in mm"),
-    bed: str = typer.Option("256,256,256", "--bed", help="Printer build volume 'X,Y,Z' in mm"),
+    print_volume: str = typer.Option(
+        "250,220,270",
+        "--print-volume",
+        help="Printer build volume 'X,Y,Z' in mm (default 250,220,270)",
+    ),
     cutaway: bool = typer.Option(False, "--cutaway/--no-cutaway", help="Generate sectioned display cutaway housings"),
     infill: float = typer.Option(20.0, "--infill", help="Slicer infill percentage (0..100)"),
     wall_loops: int = typer.Option(3, "--wall-loops", help="Perimeter wall loop count (>= 1)"),
+    top_bottom_layers: int = typer.Option(
+        4,
+        "--top-bottom-layers",
+        help="Solid top and bottom shell layer count (>= 1)",
+    ),
+    flow_rate: float = typer.Option(
+        8.0,
+        "--flow-rate",
+        help="Effective average volumetric extrusion flow in mm^3/s for time estimates",
+    ),
+    support_mass_pct: float = typer.Option(
+        15.0,
+        "--support-mass-pct",
+        help="Extra filament mass overhead % for tree supports (half for buildplate-only)",
+    ),
+    brim_width: float = typer.Option(
+        5.0,
+        "--brim-width",
+        help="Outer brim width in mm for slender parts (also sets brim-plate gap >= 2*width+2)",
+    ),
+    mesh_quality: str = typer.Option(
+        "ultra",
+        "--mesh-quality",
+        help="STL smoothness preset: draft, standard, fine, or ultra (default)",
+    ),
+    shrinkage_compensation: bool = typer.Option(
+        True,
+        "--shrinkage-compensation/--no-shrinkage-compensation",
+        help="Bake filament XY/Z thermal shrinkage compensation into exported STLs",
+    ),
     clearance_bias: float = typer.Option(0.0, "--clearance-bias", help="Additive radial clearance offset in mm"),
     coupon: bool = typer.Option(True, "--coupon/--no-coupon", help="Include filament tolerance calibration coupon STL"),
     pack_plates: bool = typer.Option(
@@ -1790,12 +1826,12 @@ def print_kit(
     plate_margin: float = typer.Option(
         8.0,
         "--plate-margin",
-        help="Minimum clearance margin from printer bed edges in mm",
+        help="Minimum clearance margin from print-volume XY edges in mm",
     ),
     plate_gap: float = typer.Option(
         6.0,
         "--plate-gap",
-        help="Minimum XY gap between parts on non-brim plates in mm (brim plates use >= 12 mm)",
+        help="Minimum XY gap between parts on non-brim plates in mm (brim plates use >= 2*brim+2)",
     ),
     assembled_preview: bool = typer.Option(
         False,
@@ -1811,16 +1847,22 @@ def print_kit(
 ):
   """Generate 3D-printable snap-fit engine model kit STLs, manifest, and assembly guide."""
   try:
-    bed_dims = _parse_bed_dims_mm(bed)
+    vol_dims = _parse_print_volume_mm(print_volume)
     cfg = PrintKitConfig(
         scale=scale,
         filament=filament,
         nozzle_diameter_mm=nozzle,
         layer_height_mm=layer_height,
-        printer_bed_mm=bed_dims,
+        print_volume_mm=vol_dims,
         cutaway=cutaway,
         infill_pct=infill,
         wall_loops=wall_loops,
+        top_bottom_layers=top_bottom_layers,
+        volumetric_flow_mm3_s=flow_rate,
+        support_mass_overhead_pct=support_mass_pct,
+        brim_width_mm=brim_width,
+        mesh_quality=mesh_quality,
+        compensate_shrinkage=shrinkage_compensation,
         clearance_bias_mm=clearance_bias,
         include_coupon=coupon,
         pack_plates=pack_plates,
@@ -1834,7 +1876,7 @@ def print_kit(
 
   rich.print(
       f"[bold cyan]Generating {cfg.scale:.2f}x {cfg.filament_profile.name} OpenEngine Print Kit "
-      f"(cutaway={cfg.cutaway}, verify_kinematics={verify_kinematics})...[/bold cyan]"
+      f"(cutaway={cfg.cutaway}, mesh={cfg.mesh_quality}, verify_kinematics={verify_kinematics})...[/bold cyan]"
   )
   summary = run_print_kit_workflow(
       cfg=cfg,
@@ -1846,6 +1888,7 @@ def print_kit(
   collisions_ok = not summary.static_collisions and not summary.kinematic_collisions
   fitment_ok = all(item.is_valid for item in summary.fitment_checks)
   snaps_ok = all(d.is_safe for d in summary.snap_fit_designs.values())
+  lin_defl, ang_defl = cfg.mesh_deflections
 
   summary_table = Table(
       title=f"OpenEngine Print Kit Summary ({summary.filament_profile.name} @ {cfg.scale:.2f}x)",
@@ -1854,8 +1897,18 @@ def print_kit(
   )
   summary_table.add_column("Metric", style="magenta")
   summary_table.add_column("Value", style="bold green")
-  summary_table.add_row("Filament / Nozzle / Layer", f"{summary.filament_profile.name} | {cfg.nozzle_diameter_mm:.2f} mm / {cfg.layer_height_mm:.2f} mm")
-  summary_table.add_row("Bed Envelope / Cutaway", f"{bed_dims[0]:.0f}x{bed_dims[1]:.0f}x{bed_dims[2]:.0f} mm | {'ON' if cfg.cutaway else 'OFF'}")
+  summary_table.add_row(
+      "Filament / Nozzle / Layer / Mesh",
+      f"{summary.filament_profile.name} | {cfg.nozzle_diameter_mm:.2f} mm / {cfg.layer_height_mm:.2f} mm | {cfg.mesh_quality} ({lin_defl:.3f} mm, {ang_defl:.2f} rad)",
+  )
+  summary_table.add_row(
+      "Print Volume / Cutaway",
+      f"{vol_dims[0]:.0f}x{vol_dims[1]:.0f}x{vol_dims[2]:.0f} mm | {'ON' if cfg.cutaway else 'OFF'}",
+  )
+  summary_table.add_row(
+      "Slicer Profile (Infill / Walls / T-B / Flow)",
+      f"{cfg.infill_pct:.0f}% | {cfg.wall_loops} walls / {cfg.top_bottom_layers} T-B | {cfg.volumetric_flow_mm3_s:.1f} mm^3/s | sup +{cfg.support_mass_overhead_pct:.0f}%",
+  )
   summary_table.add_row("Unique Parts / Total Pieces", f"{summary.total_unique_parts} unique STLs / {summary.total_printed_pieces} pieces")
   filament_mass_str = ", ".join(
       f"{fil}: {mass:.1f} g" for fil, mass in summary.filament_mass_by_type_g.items()
@@ -1871,7 +1924,7 @@ def print_kit(
         "Packed Build Plates",
         f"{len(pp.plates)} plates ({pp.total_placed_pieces}/{summary.total_printed_pieces} pcs, group={pp.group_mode}) | {pp.plates_dir}",
     )
-  summary_table.add_row("All Parts Fit Bed", _status_badge(summary.bed_fits_all))
+  summary_table.add_row("All Parts Fit Print Volume", _status_badge(summary.all_fit_print_volume))
   summary_table.add_row("All STLs Watertight", _status_badge(summary.all_watertight))
   summary_table.add_row(
       "Static / Kinematic Collisions",
@@ -1894,7 +1947,7 @@ def print_kit(
     plate_table.add_column("Group", style="white")
     plate_table.add_column("Pcs", justify="right", style="white")
     plate_table.add_column("Used XYZ (mm)", style="green")
-    plate_table.add_column("Bed %", justify="right", style="yellow")
+    plate_table.add_column("Plate %", justify="right", style="yellow")
     plate_table.add_column("Supports", style="magenta")
     plate_table.add_column("Brim", style="white")
     plate_table.add_column("WT", style="bold green")
@@ -1910,7 +1963,7 @@ def print_kit(
           plate.group_label,
           str(plate.piece_count),
           f"{ux:.1f}x{uy:.1f}x{uz:.1f}",
-          f"{plate.bed_utilization_pct:.1f}%",
+          f"{plate.plate_utilization_pct:.1f}%",
           plate.support_recommendation,
           "Yes" if plate.brim_recommended else "No",
           _status_badge(plate.watertight),
@@ -1927,7 +1980,7 @@ def print_kit(
   part_table.add_column("Part", style="cyan")
   part_table.add_column("Qty", justify="right", style="white")
   part_table.add_column("Oriented XYZ (mm)", style="green")
-  part_table.add_column("Bed", style="bold green")
+  part_table.add_column("Vol", style="bold green")
   part_table.add_column("OH %", justify="right", style="yellow")
   part_table.add_column("Supports", style="magenta")
   part_table.add_column("Brim", style="white")
@@ -1944,7 +1997,7 @@ def print_kit(
         rep.part_name,
         str(rep.quantity),
         f"{dx:.1f}x{dy:.1f}x{dz:.1f}",
-        _status_badge(rep.fits_bed),
+        _status_badge(rep.fits_print_volume),
         f"{rep.overhang_pct:.2f}%",
         rep.support_recommendation,
         "Yes" if rep.brim_recommended else "No",
@@ -1954,9 +2007,11 @@ def print_kit(
     )
   rich.print(part_table)
 
-  if not summary.bed_fits_all:
-    overflow_parts = [r.part_name for r in display_reports if not r.fits_bed]
-    rich.print(f"[bold yellow]Warning: Printer bed dimensions exceeded by: {', '.join(overflow_parts)}[/bold yellow]")
+  if not summary.all_fit_print_volume:
+    overflow_parts = [r.part_name for r in display_reports if not r.fits_print_volume]
+    rich.print(
+        f"[bold yellow]Warning: Print volume dimensions exceeded by: {', '.join(overflow_parts)}[/bold yellow]"
+    )
   if not fitment_ok:
     bad_joints = [c.joint_name for c in summary.fitment_checks if not c.is_valid]
     rich.print(f"[bold yellow]Warning: Fitment audit check(s) flagged: {', '.join(bad_joints)}[/bold yellow]")

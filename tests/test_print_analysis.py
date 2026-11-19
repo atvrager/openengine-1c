@@ -89,27 +89,27 @@ def test_orient_flanged_cylinder_and_side_cylinder():
   res_flange = orient_part_for_printing(flanged_upside, "flanged_hub")
   assert res_flange.overhang_area_mm2 == pytest.approx(0.0, abs=1.0)
   assert res_flange.contact_area_mm2 > 1900.0
-  assert res_flange.bed_dims_xyz_mm[2] == pytest.approx(35.0, abs=0.1)
+  assert res_flange.oriented_dims_xyz_mm[2] == pytest.approx(35.0, abs=0.1)
 
   cyl_sideways = Part(Cylinder(10.0, 40.0).rotate(Axis.X, 90.0).wrapped)
   res_cyl = orient_part_for_printing(cyl_sideways, "shaft_blank")
   assert res_cyl.overhang_area_mm2 == pytest.approx(0.0, abs=1.0)
   assert res_cyl.contact_area_mm2 > 300.0
-  assert res_cyl.bed_dims_xyz_mm[2] == pytest.approx(40.0, abs=0.1)
+  assert res_cyl.oriented_dims_xyz_mm[2] == pytest.approx(40.0, abs=0.1)
 
 
-def test_orient_preferred_rotation_and_bed_fit_z_rotation():
-  """Preferred rotation respects +90 deg Z rotation for narrow beds and 45 deg diagonal fallback."""
+def test_orient_preferred_rotation_and_volume_fit_z_rotation():
+  """Preferred rotation respects +90 deg Z rotation for narrow print volumes and 45 deg diagonal fallback."""
   long_bar = Part(Box(120.0, 20.0, 10.0).wrapped)
   res_rot90 = orient_part_for_printing(
       long_bar,
       "long_bar",
-      printer_bed_mm=(50.0, 150.0, 100.0),
+      print_volume_mm=(50.0, 150.0, 100.0),
       preferred_rotation_xyz_deg=(0.0, 0.0, 0.0),
   )
   assert res_rot90.rotation_xyz_deg == pytest.approx((0.0, 0.0, 90.0))
-  assert res_rot90.bed_dims_xyz_mm[0] <= 50.0 + 1.0e-4
-  assert res_rot90.bed_dims_xyz_mm[1] <= 150.0 + 1.0e-4
+  assert res_rot90.oriented_dims_xyz_mm[0] <= 50.0 + 1.0e-4
+  assert res_rot90.oriented_dims_xyz_mm[1] <= 150.0 + 1.0e-4
 
   # Preferred orientation that already fits must be preserved even if upside-down.
   flange = Cylinder(25.0, 5.0, align=(Align.CENTER, Align.CENTER, Align.MIN))
@@ -123,11 +123,11 @@ def test_orient_preferred_rotation_and_bed_fit_z_rotation():
   assert res_pref.rotation_xyz_deg == pytest.approx((180.0, 0.0, 0.0))
   assert res_pref.overhang_area_mm2 > 1000.0
 
-  # Diagonal 45-deg Z fallback when 280 mm bar exceeds 256 mm orthogonal axes.
+  # Diagonal 45-deg Z fallback when 280 mm bar exceeds 250x220 orthogonal axes.
   diag_bar = Part(Box(280.0, 30.0, 15.0).wrapped)
-  res_diag = orient_part_for_printing(diag_bar, "diag_bar", printer_bed_mm=(256.0, 256.0, 256.0))
-  assert res_diag.bed_dims_xyz_mm[0] <= 256.0
-  assert res_diag.bed_dims_xyz_mm[1] <= 256.0
+  res_diag = orient_part_for_printing(diag_bar, "diag_bar", print_volume_mm=(250.0, 220.0, 270.0))
+  assert res_diag.oriented_dims_xyz_mm[0] <= 250.0
+  assert res_diag.oriented_dims_xyz_mm[1] <= 220.0
 
 
 def test_export_part_stl_watertight_and_corrupt_detection(tmp_path: Path):
@@ -198,17 +198,17 @@ def test_overhang_45deg_chamfer_and_support_classification(tmp_path: Path):
   assert rep_tree.support_recommendation == "tree_supports"
 
 
-def test_bed_fit_brim_mass_and_time_estimates(tmp_path: Path):
-  """Verify bed-fit failure, brim recommendation for slender parts, and infill mass scaling."""
+def test_volume_fit_brim_mass_and_time_estimates(tmp_path: Path):
+  """Verify print-volume fit failure, brim recommendation, mesh smoothness, and slicer tunables."""
   tall_slender = Part(Box(8.0, 8.0, 60.0, align=(Align.CENTER, Align.CENTER, Align.MIN)).wrapped)
   rep_tall = analyze_part_printability(
       tall_slender,
       "tall_pin",
       tmp_path / "tall.stl",
-      printer_bed_mm=(256.0, 256.0, 50.0),
+      print_volume_mm=(250.0, 220.0, 50.0),
   )
   assert isinstance(rep_tall, PartPrintReport)
-  assert rep_tall.fits_bed is False
+  assert rep_tall.fits_print_volume is False
   assert rep_tall.brim_recommended is True
   assert len(rep_tall.warnings) >= 2
 
@@ -227,12 +227,61 @@ def test_bed_fit_brim_mass_and_time_estimates(tmp_path: Path):
       infill_pct=100.0,
       density_g_cm3=1.27,
   )
-  assert rep_20.fits_bed is True
+  rep_thick_tb = analyze_part_printability(
+      flat_block,
+      "flat_tb8",
+      tmp_path / "flat_tb8.stl",
+      infill_pct=20.0,
+      top_bottom_layers=8,
+      density_g_cm3=1.27,
+  )
+  rep_fast_flow = analyze_part_printability(
+      flat_block,
+      "flat_fast",
+      tmp_path / "flat_fast.stl",
+      infill_pct=20.0,
+      volumetric_flow_mm3_s=16.0,
+      density_g_cm3=1.27,
+  )
+  assert rep_20.fits_print_volume is True
   assert rep_20.brim_recommended is False
   assert rep_20.volume_cm3 == pytest.approx(21.0, abs=0.05)
   assert rep_100.estimated_mass_g == pytest.approx(21.0 * 1.27, abs=0.2)
-  assert 0.0 < rep_20.estimated_mass_g < rep_100.estimated_mass_g
-  assert rep_20.estimated_print_time_min > 1.0
+  assert 0.0 < rep_20.estimated_mass_g < rep_thick_tb.estimated_mass_g < rep_100.estimated_mass_g
+  assert rep_20.estimated_print_time_min > rep_fast_flow.estimated_print_time_min > 1.0
+
+  # Verify support mass overhead scales supported part mass cleanly.
+  c_part = _make_c_bracket()
+  rep_sup_0 = analyze_part_printability(
+      c_part,
+      "c_sup0",
+      tmp_path / "c_sup0.stl",
+      support_mass_overhead_pct=0.0,
+  )
+  rep_sup_25 = analyze_part_printability(
+      c_part,
+      "c_sup25",
+      tmp_path / "c_sup25.stl",
+      support_mass_overhead_pct=25.0,
+  )
+  assert rep_sup_25.estimated_mass_g == pytest.approx(rep_sup_0.estimated_mass_g * 1.25, rel=1e-3)
+
+  # Verify ultra mesh quality preserves substantially finer cylinder smoothness than draft.
+  cyl = Part(Cylinder(20.0, 15.0, align=(Align.CENTER, Align.CENTER, Align.MIN)).wrapped)
+  rep_draft = analyze_part_printability(
+      cyl,
+      "cyl_draft",
+      tmp_path / "cyl_draft.stl",
+      cfg=PrintKitConfig(mesh_quality="draft"),
+  )
+  rep_ultra = analyze_part_printability(
+      cyl,
+      "cyl_ultra",
+      tmp_path / "cyl_ultra.stl",
+      cfg=PrintKitConfig(mesh_quality="ultra"),
+  )
+  assert rep_draft.watertight is True and rep_ultra.watertight is True
+  assert rep_ultra.triangle_count > (3 * rep_draft.triangle_count)
 
 
 def test_print_kit_config_and_shrinkage_compensation(tmp_path: Path):
@@ -285,7 +334,7 @@ def test_tolerance_coupon_geometry_mating_and_watertightness(tmp_path: Path):
   # Verify binary STL export and printability metrics.
   rep = analyze_part_printability(coupon, "coupon_petg", tmp_path / "coupon_petg.stl", cfg_petg)
   assert rep.watertight is True
-  assert rep.fits_bed is True
+  assert rep.fits_print_volume is True
   assert rep.support_recommendation == "none"
   assert rep.overhang_area_mm2 == pytest.approx(0.0, abs=1.0e-3)
   assert rep.triangle_count > 1000

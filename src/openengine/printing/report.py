@@ -50,7 +50,8 @@ def _format_header_section(summary: PrintKitSummary) -> list[str]:
   """Build top-level kit build summary and verification gate overview."""
   cfg = summary.config
   profile = summary.filament_profile
-  bx, by, bz = cfg.printer_bed_mm
+  vx, vy, vz = cfg.print_volume_mm
+  lin_defl, ang_defl = cfg.mesh_deflections
   collisions_ok = not summary.static_collisions and not summary.kinematic_collisions
   fitment_ok = all(c.is_valid for c in summary.fitment_checks)
   snaps_ok = all(d.is_safe for d in summary.snap_fit_designs.values())
@@ -61,11 +62,11 @@ def _format_header_section(summary: PrintKitSummary) -> list[str]:
       "",
       f"- **Scale & Mode:** `{cfg.scale:.2f}x` | Cutaway display: `{'ON' if cfg.cutaway else 'OFF'}`",
       f"- **Selected Filament:** `{profile.name}` (Density `{profile.density_g_cm3:.2f} g/cm^3`, HDT `{profile.hdt_c:.0f} C`)",
-      f"- **Printer Envelope:** `{bx:.0f} x {by:.0f} x {bz:.0f} mm` (`{cfg.nozzle_diameter_mm:.2f} mm` nozzle, `{cfg.layer_height_mm:.2f} mm` layer height)",
+      f"- **Print Volume:** `{vx:.0f} x {vy:.0f} x {vz:.0f} mm` (`{cfg.nozzle_diameter_mm:.2f} mm` nozzle, `{cfg.layer_height_mm:.2f} mm` layer height, mesh=`{cfg.mesh_quality}` `{lin_defl:.3f} mm / {ang_defl:.2f} rad`)",
       f"- **Kit BOM Totals:** `{summary.total_unique_parts}` unique STLs / `{summary.total_printed_pieces}` printed pieces",
       f"- **Total Filament Mass by Type:** `{filament_breakdown}` (Kit Total: `{summary.total_mass_g:.1f} g`)",
       f"- **Estimated Kit Filament & Print Time:** `{summary.total_mass_g:.1f} g` | `{_format_duration(summary.total_print_time_min)}`",
-      f"- **Verification Gates:** Bed Fit `{'PASS' if summary.bed_fits_all else 'FAIL'}` | Watertight `{'PASS' if summary.all_watertight else 'FAIL'}` | Collisions `{'PASS (0 hits)' if collisions_ok else 'FAIL'}` | Fitment & Snaps `{'PASS' if (fitment_ok and snaps_ok) else 'FAIL'}`",
+      f"- **Verification Gates:** Print Volume Fit `{'PASS' if summary.all_fit_print_volume else 'FAIL'}` | Watertight `{'PASS' if summary.all_watertight else 'FAIL'}` | Collisions `{'PASS (0 hits)' if collisions_ok else 'FAIL'}` | Fitment & Snaps `{'PASS' if (fitment_ok and snaps_ok) else 'FAIL'}`",
   ]
   if summary.plate_packing is not None:
     pp = summary.plate_packing
@@ -83,29 +84,39 @@ def _format_filament_and_slicer_section(summary: PrintKitSummary) -> list[str]:
   """Build Section 1 covering filament temperatures, PEI warning, slicer walls, and shrinkage."""
   cfg = summary.config
   profile = summary.filament_profile
-  sx, sy, sz = shrinkage_compensation_xyz(profile)
+  sx, sy, sz = (
+      shrinkage_compensation_xyz(profile) if cfg.compensate_shrinkage else (1.0, 1.0, 1.0)
+  )
   xy_pct = (sx - 1.0) * PCT_SCALE
   z_pct = (sz - 1.0) * PCT_SCALE
+  lin_defl, ang_defl = cfg.mesh_deflections
 
   w_struct = min_printable_wall_mm(cfg, structural=True)
   w_cosmetic = min_printable_wall_mm(cfg, structural=False)
   fin_min = min_fin_thickness_mm(cfg)
+  shrink_note = (
+      "**Already baked into exported STLs** -- keep slicer XYZ scale at `100%`"
+      if cfg.compensate_shrinkage
+      else "Disabled (`--no-shrinkage-compensation`) -- apply shrinkage scaling in slicer if needed"
+  )
 
   return [
       "## 1. Filament & Slicer Setup",
       "",
       "> [!IMPORTANT]",
-      f"> **Bed Preparation & Release Warning ({profile.name}):** {profile.adhesion_note}",
+      f"> **Build-Plate Preparation & Release Warning ({profile.name}):** {profile.adhesion_note}",
       "",
       "| Slicer / Material Parameter | Recommended Value | Notes |",
       "| :--- | :--- | :--- |",
       f"| **Filament Profile** | `{profile.name}` | {profile.print_notes} |",
       f"| **Nozzle Temperature** | `{profile.nozzle_temp_c:.0f} C` | Adjust +/-5 C based on hotend thermistor calibration |",
       f"| **Bed Temperature** | `{profile.bed_temp_c:.0f} C` | Keep first layer slow (`20-30 mm/s`) for sharp corners |",
-      f"| **Wall Loops / Perimeters** | `{cfg.wall_loops}` loops | Structural min wall `{w_struct:.2f} mm`, cosmetic `{w_cosmetic:.2f} mm`, fin `{fin_min:.2f} mm` |",
+      f"| **Wall Loops / Top-Bottom Layers** | `{cfg.wall_loops}` loops / `{cfg.top_bottom_layers}` solid layers | Structural min wall `{w_struct:.2f} mm`, cosmetic `{w_cosmetic:.2f} mm`, fin `{fin_min:.2f} mm` |",
       f"| **Infill Density** | `{cfg.infill_pct:.0f}%` (Gyroid / Grid) | Use gyroid or 3D honeycomb for uniform stiffness |",
       f"| **Layer Height / Nozzle** | `{cfg.layer_height_mm:.2f} mm` / `{cfg.nozzle_diameter_mm:.2f} mm` | All horizontal bores use 45-deg teardrop crests |",
-      f"| **Pre-Applied Shrinkage Factors** | `X={sx:.5f} (+{xy_pct:.2f}%)`, `Y={sy:.5f} (+{xy_pct:.2f}%)`, `Z={sz:.5f} (+{z_pct:.2f}%)` | **Already baked into exported STLs** -- keep slicer XYZ scale at `100%` |",
+      f"| **Volumetric Flow / Support Overhead / Brim** | `{cfg.volumetric_flow_mm3_s:.1f} mm^3/s` / `{cfg.support_mass_overhead_pct:.0f}%` tree (`{0.5 * cfg.support_mass_overhead_pct:.1f}%` buildplate) / `{cfg.brim_width_mm:.1f} mm` brim | Used for mass and print-time estimates |",
+      f"| **STL Mesh Smoothness** | `{cfg.mesh_quality}` (`{lin_defl:.3f} mm` linear, `{ang_defl:.2f} rad` angular) | Configure with `--mesh-quality draft|standard|fine|ultra` |",
+      f"| **Pre-Applied Shrinkage Factors** | `X={sx:.5f} (+{xy_pct:.2f}%)`, `Y={sy:.5f} (+{xy_pct:.2f}%)`, `Z={sz:.5f} (+{z_pct:.2f}%)` | {shrink_note} |",
       f"| **Active Radial Clearances** | Run `{running_clearance_radial_mm(cfg):.3f} mm`, Slip `{slip_clearance_radial_mm(cfg):.3f} mm`, Snap `{snap_clearance_mm(cfg):.3f} mm`, Press `{press_interference_radial_mm(cfg):.3f} mm` | User `--clearance-bias`: `{cfg.clearance_bias_mm:+.3f} mm` |",
       "",
       "### Total Filament Mass by Filament Type",
@@ -192,13 +203,13 @@ def _format_coupon_section(summary: PrintKitSummary) -> list[str]:
 def _format_part_row(rep: PartPrintReport, guide_dir: Path) -> str:
   """Render one Markdown table row for a ``PartPrintReport``."""
   dx, dy, dz = rep.oriented_dims_mm
-  bed_str = "PASS" if rep.fits_bed else "FAIL"
+  vol_str = "PASS" if rep.fits_print_volume else "FAIL"
   brim_str = "Yes" if rep.brim_recommended else "No"
   wt_str = "PASS" if rep.watertight else "FAIL"
   rel_path = _format_rel_stl_path(rep.stl_path, guide_dir)
   return (
       f"| `{rep.part_name}` | {rep.quantity} | `{dx:.1f} x {dy:.1f} x {dz:.1f}` | "
-      f"{bed_str} | {rep.overhang_pct:.2f}% | `{rep.support_recommendation}` | "
+      f"{vol_str} | {rep.overhang_pct:.2f}% | `{rep.support_recommendation}` | "
       f"{brim_str} | {wt_str} | {rep.estimated_mass_g:.1f} | "
       f"{rep.estimated_print_time_min:.1f} | `{rel_path}` |"
   )
@@ -210,9 +221,9 @@ def _format_parts_table_section(summary: PrintKitSummary) -> list[str]:
   lines = [
       "## 3. Full Per-Part Print Table",
       "",
-      f"All `{summary.total_unique_parts}` unique engine kit STLs (`{summary.total_printed_pieces}` total pieces) are pre-oriented onto `Z = 0` with shrinkage compensation baked in:",
+      f"All `{summary.total_unique_parts}` unique engine kit STLs (`{summary.total_printed_pieces}` total pieces) are pre-oriented onto `Z = 0`:",
       "",
-      "| Part | Qty | Oriented Dims (mm) | Bed Fit | Overhang % | Support Rec | Brim | Watertight | Est. Mass (g) | Est. Time (min) | STL Path |",
+      "| Part | Qty | Oriented Dims (mm) | Volume Fit | Overhang % | Support Rec | Brim | Watertight | Est. Mass (g) | Est. Time (min) | STL Path |",
       "| :--- | :---: | :--- | :---: | :---: | :--- | :---: | :---: | :---: | :---: | :--- |",
   ]
   for rep in summary.parts_reports:
@@ -220,7 +231,7 @@ def _format_parts_table_section(summary: PrintKitSummary) -> list[str]:
 
   lines.append(
       f"| **Kit Total ({summary.total_unique_parts} unique)** | **{summary.total_printed_pieces}** | — | "
-      f"**{'PASS' if summary.bed_fits_all else 'FAIL'}** | — | — | — | "
+      f"**{'PASS' if summary.all_fit_print_volume else 'FAIL'}** | — | — | — | "
       f"**{'PASS' if summary.all_watertight else 'FAIL'}** | **{summary.total_mass_g:.1f}** | "
       f"**{summary.total_print_time_min:.1f}** | `parts/` |"
   )
@@ -229,7 +240,7 @@ def _format_parts_table_section(summary: PrintKitSummary) -> list[str]:
         "",
         "Optional Pre-Print Calibration Coupon:",
         "",
-        "| Part | Qty | Oriented Dims (mm) | Bed Fit | Overhang % | Support Rec | Brim | Watertight | Est. Mass (g) | Est. Time (min) | STL Path |",
+        "| Part | Qty | Oriented Dims (mm) | Volume Fit | Overhang % | Support Rec | Brim | Watertight | Est. Mass (g) | Est. Time (min) | STL Path |",
         "| :--- | :---: | :--- | :---: | :---: | :--- | :---: | :---: | :---: | :---: | :--- |",
         _format_part_row(summary.coupon_report, guide_dir),
     ])
@@ -339,7 +350,7 @@ def _format_packed_plates_section(summary: PrintKitSummary) -> list[str]:
           "for single-part reprints; the calibration coupon stays separate."
       ),
       "",
-      "| Plate | Group | Pieces | Used XYZ (mm) | Bed % | Supports | Brim | Filament Mass | Est. Time (min) | Watertight | STL Path |",
+      "| Plate | Group | Pieces | Used XYZ (mm) | Plate % | Supports | Brim | Filament Mass | Est. Time (min) | Watertight | STL Path |",
       "| :--- | :--- | :---: | :--- | :---: | :--- | :---: | :--- | :---: | :---: | :--- |",
   ]
 
@@ -349,7 +360,7 @@ def _format_packed_plates_section(summary: PrintKitSummary) -> list[str]:
     fil_str = _format_filament_mass_inline(plate.filament_mass_by_type_g)
     lines.append(
         f"| `{plate.plate_name}` | {plate.group_label} | {plate.piece_count} | "
-        f"`{ux:.1f} x {uy:.1f} x {uz:.1f}` | {plate.bed_utilization_pct:.1f}% | "
+        f"`{ux:.1f} x {uy:.1f} x {uz:.1f}` | {plate.plate_utilization_pct:.1f}% | "
         f"`{plate.support_recommendation}` | {'Yes' if plate.brim_recommended else 'No'} | "
         f"{fil_str} | {plate.estimated_print_time_min:.1f} | "
         f"{'PASS' if plate.watertight else 'FAIL'} | `{rel_path}` |"
@@ -368,7 +379,7 @@ def _format_packed_plates_section(summary: PrintKitSummary) -> list[str]:
 
   if packing.unplaced_parts:
     unplaced_str = ", ".join(f"`{name}`" for name in packing.unplaced_parts)
-    lines.extend(["", f"> [!WARNING]", f"> **Unplaced Oversized Parts (Exceed Printer Bed):** {unplaced_str}"])
+    lines.extend(["", f"> [!WARNING]", f"> **Unplaced Oversized Parts (Exceed Print Volume):** {unplaced_str}"])
 
   plate_warnings = [
       f"- `{plate.plate_name}`: {msg}"
